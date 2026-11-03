@@ -32,6 +32,8 @@ const REG_DIRECTION: u16 = 0x8023;
 const REG_APPLY: u16 = 0x80A0;
 const APPLY: u8 = 0x01;
 pub const GPU_ADDR: u16 = 0x67;
+/// Largest direct-color block per SMBus write (verified on AUMA0-E6K5-1113: 30 bytes = 10 LEDs).
+const BLOCK_BYTES: usize = 30;
 
 /// Built-in ENE animations (mode number, name).
 pub const HARDWARE_MODES: &[(u8, &str)] = &[
@@ -215,25 +217,31 @@ impl Ene {
         self.write_reg(REG_APPLY, APPLY)
     }
 
-    /// Write direct colors, only touching LEDs that changed (I2C is slow).
+    /// Write direct colors. I2C through the NVIDIA driver costs ~1.8 ms per
+    /// transaction (and busy-waits a CPU core), so only the changed span is sent,
+    /// in 30-byte SMBus blocks (10 LEDs): a full frame is 6 transactions, not 60.
     pub fn set_direct(&mut self, colors: &[Rgb]) -> io::Result<()> {
         let n = colors.len().min(self.led_count);
         if self.last.len() != self.led_count {
             self.last = vec![Rgb::new(1, 2, 3); self.led_count];
         }
-        for (i, &c) in colors.iter().enumerate().take(n) {
-            if self.last[i] != c {
-                self.write_block(self.direct_reg + 3 * i as u16, &[c.r, c.b, c.g])?;
-                self.last[i] = c;
-            }
+        let changed: Vec<usize> = (0..n).filter(|&i| self.last[i] != colors[i]).collect();
+        let (Some(&first), Some(&last)) = (changed.first(), changed.last()) else {
+            return Ok(());
+        };
+        let bytes: Vec<u8> = colors[first..=last].iter().flat_map(|c| [c.r, c.b, c.g]).collect();
+        for (k, chunk) in bytes.chunks(BLOCK_BYTES).enumerate() {
+            self.write_block(self.direct_reg + (3 * first + k * BLOCK_BYTES) as u16, chunk)?;
         }
+        self.last[first..=last].copy_from_slice(&colors[first..=last]);
         Ok(())
     }
 
-    /// Colors used by the hardware animations.
+    /// Colors used by the hardware animations (30-byte blocks, like direct mode).
     pub fn set_effect_colors(&mut self, colors: &[Rgb]) -> io::Result<()> {
-        for (i, c) in colors.iter().enumerate().take(self.led_count) {
-            self.write_block(self.effect_reg + 3 * i as u16, &[c.r, c.b, c.g])?;
+        let bytes: Vec<u8> = colors.iter().take(self.led_count).flat_map(|c| [c.r, c.b, c.g]).collect();
+        for (k, chunk) in bytes.chunks(BLOCK_BYTES).enumerate() {
+            self.write_block(self.effect_reg + (k * BLOCK_BYTES) as u16, chunk)?;
         }
         self.write_reg(REG_APPLY, APPLY)
     }

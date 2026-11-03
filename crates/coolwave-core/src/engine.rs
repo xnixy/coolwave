@@ -603,9 +603,14 @@ impl Device for AuraDev {
 
 // ---------------------------------------------------------------- GPU
 
+/// GPU frames at most this often: its I2C bus goes through the NVIDIA driver,
+/// and keeping it busy makes the desktop (and mouse cursor) stutter.
+const GPU_FRAME: Duration = Duration::from_millis(100);
+
 #[derive(Default)]
 struct GpuDev {
     dev: Option<Ene>,
+    last_frame: Option<Instant>,
     /// Hardware mode currently programmed (to avoid rewriting it every frame).
     hw_active: Option<(GpuHardware, Rgb, Rgb)>,
 }
@@ -650,6 +655,10 @@ impl Device for GpuDev {
         if self.hw_active.take().is_some() {
             dev.enter_direct()?;
         }
+        if !f.identifying() && self.last_frame.is_some_and(|t| t.elapsed() < GPU_FRAME) {
+            return Ok(());
+        }
+        self.last_frame = Some(Instant::now());
         let colors: Vec<Rgb> = match f.identify(Identify::Gpu) {
             Some(c) => vec![c; dev.led_count],
             None => (0..dev.led_count).map(|i| f.strip(0, i, dev.led_count, 100)).collect(),
