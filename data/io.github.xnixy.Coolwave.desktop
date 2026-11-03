@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Coolwave
+Comment=Lighting and cooling control for ASUS ROG hardware
+Exec=coolwave
+Icon=io.github.xnixy.Coolwave
+Categories=Settings;HardwareSettings;
+Keywords=RGB;lighting;fan;cooling;aura;
+StartupNotify=true
+StartupWMClass=io.github.xnixy.Coolwave

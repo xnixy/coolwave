@@ -1,0 +1,7 @@
+# Coolwave: let the logged-in user control lighting devices without root.
+# ROG EURUX fan controller
+SUBSYSTEMS=="usb|hidraw", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1d98", TAG+="uaccess"
+# ASUS Aura motherboard LED controller
+SUBSYSTEMS=="usb|hidraw", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1bed", TAG+="uaccess"
+# ROG Strix LC IV pump screen (720x720 LCD)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1de7", TAG+="uaccess"

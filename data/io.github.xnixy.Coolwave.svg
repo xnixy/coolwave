@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1a3a"/>
+      <stop offset="1" stop-color="#1a0b33"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00e5ff"/>
+      <stop offset="0.5" stop-color="#7c4dff"/>
+      <stop offset="1" stop-color="#ff2d95"/>
+    </linearGradient>
+    <radialGradient id="hub" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.6" stop-color="#9be7ff"/>
+      <stop offset="1" stop-color="#00b8d4"/>
+    </radialGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="3" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)"/>
+  <!-- glowing light ring -->
+  <circle cx="64" cy="64" r="40" fill="none" stroke="url(#ring)" stroke-width="7" filter="url(#glow)"/>
+  <!-- fan blades -->
+  <g fill="#cfd8ff" opacity="0.92" transform="translate(64 64)">
+    <path id="blade" d="M0 -6 C 10 -30, 30 -26, 28 -12 C 22 -8, 12 -6, 0 -6 Z"/>
+    <use href="#blade" transform="rotate(72)"/>
+    <use href="#blade" transform="rotate(144)"/>
+    <use href="#blade" transform="rotate(216)"/>
+    <use href="#blade" transform="rotate(288)"/>
+  </g>
+  <!-- hub -->
+  <circle cx="64" cy="64" r="9" fill="url(#hub)" filter="url(#glow)"/>
+  <!-- wave -->
+  <path d="M22 100 C 34 92, 44 108, 56 100 S 78 92, 90 100 S 104 108, 106 104" fill="none" stroke="#00e5ff" stroke-width="4" stroke-linecap="round" opacity="0.85"/>
+</svg>
