@@ -75,6 +75,24 @@ impl Effect {
         }
     }
 
+    /// Which user colors this effect draws with, as (primary, secondary).
+    pub fn uses_colors(self) -> (bool, bool) {
+        match self {
+            Effect::Off | Effect::Spectrum | Effect::RainbowWave | Effect::Fire | Effect::Temperature | Effect::Aurora => (false, false),
+            Effect::Static | Effect::Breathing | Effect::Strobe => (true, false),
+            Effect::Ripple => (false, true),
+            Effect::ColorWave
+            | Effect::Gradient
+            | Effect::Comet
+            | Effect::Twinkle
+            | Effect::Reactor
+            | Effect::Spin
+            | Effect::Scanner
+            | Effect::Meteor
+            | Effect::DualTone => (true, true),
+        }
+    }
+
     /// Effects whose output never changes over time (written once, not streamed).
     pub fn is_static(self) -> bool {
         matches!(self, Effect::Off | Effect::Static | Effect::Gradient)
@@ -162,16 +180,18 @@ pub fn render(p: &Params, t: f32, px: &Pixel) -> Rgb {
             let base = if px.kind == ZoneKind::FanMiddle { p.primary } else { p.secondary };
             lerp(scale(base, 0.08), base, k)
         }
-        // Fan sides chase each other (looks like the fan ring rotates), neighbouring fans
-        // are offset; strips run a three-segment theater chase.
+        // The three fan zones form one ring: primary steps left -> middle -> right over a
+        // dimmed secondary, neighbouring fans are offset; strips run a three-segment
+        // theater chase. Zones switch hard, since a fade would show a third, mixed color.
         Effect::Spin => {
             if fan {
-                let phase = (t * s * 1.2 + px.group as f32 * 0.25).fract();
-                match px.kind {
-                    ZoneKind::FanLeft => scale(p.primary, pulse(phase, 2)),
-                    ZoneKind::FanRight => scale(p.primary, pulse(phase + 0.5, 2)),
-                    _ => scale(p.secondary, 0.35 + 0.25 * pulse(phase * 2.0, 1)),
-                }
+                let slot = match px.kind {
+                    ZoneKind::FanLeft => 0,
+                    ZoneKind::FanMiddle => 1,
+                    _ => 2,
+                };
+                let head = (t * s * 1.2 + px.group as f32 * 0.25).fract();
+                if ((head * 3.0) as u32).min(2) == slot { p.primary } else { scale(p.secondary, 0.6) }
             } else {
                 let seg = ((px.local * 24.0 - t * s * 6.0).floor() as i32).rem_euclid(3);
                 if seg == 0 { p.primary } else { scale(p.secondary, 0.12) }
@@ -363,6 +383,49 @@ mod tests {
         let side = Pixel { kind: ZoneKind::FanLeft, ..Pixel::strip(0.1, 2) };
         assert!(render(&p, 0.0, &mid).r > 0 && render(&p, 0.0, &mid).b == 0);
         assert!(render(&p, 0.0, &side).b > 0 && render(&p, 0.0, &side).r == 0);
+    }
+
+    #[test]
+    fn spin_moves_primary_through_every_fan_zone() {
+        let red = Rgb::new(255, 0, 0);
+        let blue = Rgb::new(0, 0, 255);
+        let p = Params { effect: Effect::Spin, primary: red, secondary: blue, ..Default::default() };
+        let mut peaks = Vec::new();
+        for k in [ZoneKind::FanLeft, ZoneKind::FanMiddle, ZoneKind::FanRight] {
+            let px = Pixel { kind: k, ..Pixel::strip(0.1, 1) };
+            let samples: Vec<Rgb> = (0..100).map(|i| render(&p, i as f32 / 120.0, &px)).collect();
+            // Every zone reaches primary and falls back to secondary, and is never dark.
+            assert!(samples.iter().any(|c| c.r > 240 && c.b < 20), "{k:?} never reaches primary");
+            assert!(samples.iter().any(|c| c.r < 20 && c.b > 100), "{k:?} never reaches secondary");
+            assert!(samples.iter().all(|c| c.r as u16 + c.b as u16 > 100), "{k:?} goes dark");
+            assert!(samples.iter().all(|c| c.r == 0 || c.b == 0), "{k:?} mixes the two colors");
+            peaks.push((0..100).max_by_key(|&i| samples[i].r).unwrap());
+        }
+        assert!(peaks[0] < peaks[1] && peaks[1] < peaks[2], "zones peak out of order: {peaks:?}");
+    }
+
+    #[test]
+    fn uses_colors_matches_rendering() {
+        let a = Rgb::new(255, 0, 0);
+        let b = Rgb::new(0, 255, 0);
+        let c = Rgb::new(0, 0, 255);
+        let differs = |x: Params, y: Params| {
+            (0..500).any(|i| {
+                let t = i as f32 / 100.0;
+                [ZoneKind::FanLeft, ZoneKind::FanMiddle, ZoneKind::FanRight, ZoneKind::Strip].into_iter().any(|kind| {
+                    (0..20).any(|n| {
+                        let px = Pixel { kind, local: n as f32 / 20.0, ..Pixel::strip(n as f32 / 20.0, n) };
+                        render(&x, t, &px) != render(&y, t, &px)
+                    })
+                })
+            })
+        };
+        for e in Effect::ALL {
+            let base = Params { effect: e, primary: a, secondary: b, ..Default::default() };
+            let (primary, secondary) = e.uses_colors();
+            assert_eq!(differs(base, Params { primary: c, ..base }), primary, "{e:?} primary");
+            assert_eq!(differs(base, Params { secondary: c, ..base }), secondary, "{e:?} secondary");
+        }
     }
 
     #[test]

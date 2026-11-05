@@ -81,9 +81,29 @@ pub fn build(engine: Rc<Engine>, layout: &[FanPort]) -> gtk::Widget {
     fx.add(&bright_row);
     page.add(&fx);
 
-    effect_row.connect_selected_notify(glib::clone!(#[strong] engine, move |r| {
+    // Only offer the colors that do something. Reads the engine rather than the widgets
+    // because the tray can change the effect too.
+    let sync_colors = Rc::new(glib::clone!(#[strong] engine, #[strong] colors_row, #[strong] primary, #[strong] secondary, move || {
+        let cfg = engine.config();
+        // The GPU's built-in animations take both colors whatever the effect is.
+        let gpu_hw = cfg.gpu_enabled && cfg.gpu_hardware.is_some();
+        let (p, s) = cfg.params.effect.uses_colors();
+        let (p, s) = (p || gpu_hw, s || gpu_hw);
+        primary.set_visible(p);
+        secondary.set_visible(s);
+        colors_row.set_visible(p || s);
+        colors_row.set_subtitle(match (p, s) {
+            (true, true) => "Primary · Secondary",
+            (true, false) => "Color",
+            _ => "Background",
+        });
+    }));
+    sync_colors();
+
+    effect_row.connect_selected_notify(glib::clone!(#[strong] engine, #[strong] sync_colors, move |r| {
         let e = Effect::ALL[(r.selected() as usize).min(Effect::ALL.len() - 1)];
         engine.update(|c| c.params.effect = e);
+        sync_colors();
     }));
     primary.connect_rgba_notify(glib::clone!(#[strong] engine, move |b| {
         let c = to_rgb(&b.rgba());
@@ -133,11 +153,12 @@ pub fn build(engine: Rc<Engine>, layout: &[FanPort]) -> gtk::Widget {
     gpu_speed.set_visible(gpu_mode.selected() > 0);
     devices.add(&gpu_mode);
     devices.add(&gpu_speed);
-    let push_gpu = Rc::new(glib::clone!(#[strong] engine, #[strong] gpu_mode, #[strong] gpu_speed, move || {
+    let push_gpu = Rc::new(glib::clone!(#[strong] engine, #[strong] gpu_mode, #[strong] gpu_speed, #[strong] sync_colors, move || {
         let sel = gpu_mode.selected() as usize;
         gpu_speed.set_visible(sel > 0);
         let hw = (sel > 0).then(|| GpuHardware { mode: HARDWARE_MODES[sel - 1].0, speed: gpu_speed.selected() as u8, direction: 0 });
         engine.update(|c| c.gpu_hardware = hw);
+        sync_colors();
     }));
     gpu_mode.connect_selected_notify(glib::clone!(#[strong] push_gpu, move |_| push_gpu()));
     gpu_speed.connect_selected_notify(glib::clone!(#[strong] push_gpu, move |_| push_gpu()));
@@ -150,9 +171,10 @@ pub fn build(engine: Rc<Engine>, layout: &[FanPort]) -> gtk::Widget {
         let on = r.is_active();
         engine.update(|c| c.aura_enabled = on);
     }));
-    gpu_row.connect_active_notify(glib::clone!(#[strong] engine, move |r| {
+    gpu_row.connect_active_notify(glib::clone!(#[strong] engine, #[strong] sync_colors, move |r| {
         let on = r.is_active();
         engine.update(|c| c.gpu_enabled = on);
+        sync_colors();
     }));
 
     // ---------------------------------------------------------- Motherboard zones (filled once the controller reports them)
@@ -209,7 +231,8 @@ pub fn build(engine: Rc<Engine>, layout: &[FanPort]) -> gtk::Widget {
     }
 
     // ---------------------------------------------------------- live status
-    glib::timeout_add_seconds_local(1, glib::clone!(#[strong] engine, move || {
+    glib::timeout_add_seconds_local(1, glib::clone!(#[strong] engine, #[strong] sync_colors, move || {
+        sync_colors();
         let st = engine.status();
         let fmt = |d: &coolwave_core::engine::DeviceStatus| {
             if d.state.starts_with("Connected") && d.fps > 0.0 { format!("{} · {:.0} fps", d.state, d.fps) } else { d.state.clone() }
