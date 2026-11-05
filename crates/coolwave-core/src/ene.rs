@@ -192,10 +192,17 @@ impl Ene {
             })
             .collect();
         buses.sort();
+        let mut denied = None;
         for b in buses {
-            if let Ok(e) = Self::probe(b, GPU_ADDR) {
-                return Ok(e);
+            match Self::probe(b, GPU_ADDR) {
+                Ok(e) => return Ok(e),
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => denied = denied.or(Some(b)),
+                Err(_) => {}
             }
+        }
+        // A bus we may not open could be the right one, so "not found" would be a guess.
+        if let Some(b) = denied {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("no access to /dev/i2c-{b} (run install.sh, then reboot)")));
         }
         Err(io::Error::new(io::ErrorKind::NotFound, "ASUS GPU lighting controller not found"))
     }

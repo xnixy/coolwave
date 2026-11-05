@@ -5,3 +5,5 @@ SUBSYSTEMS=="usb|hidraw", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1d98", TAG
 SUBSYSTEMS=="usb|hidraw", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1bed", TAG+="uaccess"
 # ROG Strix LC IV pump screen (720x720 LCD)
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0b05", ATTRS{idProduct}=="1de7", TAG+="uaccess"
+# GPU lighting (ENE controller). NVIDIA buses only: the motherboard SMBus stays root-only.
+SUBSYSTEM=="i2c-dev", ATTR{name}=="NVIDIA i2c adapter *", TAG+="uaccess"

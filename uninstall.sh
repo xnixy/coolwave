@@ -34,6 +34,7 @@ say "Removing system files (needs $SUDO)"
 $SUDO sh -c '
 rm -f /usr/local/libexec/coolwave-fanctl \
       /usr/share/polkit-1/actions/io.github.xnixy.coolwave.fanctl.policy \
-      /etc/udev/rules.d/60-coolwave.rules
+      /etc/udev/rules.d/60-coolwave.rules \
+      /etc/modules-load.d/coolwave-i2c.conf
 udevadm control --reload || true'
 say "Coolwave removed."

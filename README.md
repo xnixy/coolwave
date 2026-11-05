@@ -27,7 +27,7 @@ The installer:
 3. installs the app to `~/.local/bin/coolwave` with its launcher entry and icon,
 4. installs the root part with `sudo`: udev rules so your user can talk to the devices, the
    `coolwave-fanctl` fan helper with a polkit policy (no password prompt for the logged-in
-   user), and `nct6775` autoload for motherboard fan sensors,
+   user), and `nct6775` and `i2c-dev` autoload for fan sensors and GPU lighting,
 5. asks whether Coolwave should start at login (hidden in the tray).
 
 Run the same command again to update. From a checkout you can run `./install.sh` instead.
