@@ -1,4 +1,4 @@
-//! Persistent settings in `$XDG_CONFIG_HOME/coolwave/config.toml`.
+//! Persistent settings in `config.toml` under the user's config folder.
 
 use crate::engine::{default_layout, Config, FanPort};
 use serde::{Deserialize, Serialize};
@@ -21,12 +21,16 @@ impl Default for Settings {
     }
 }
 
+/// `$XDG_CONFIG_HOME/coolwave` on Linux, `%APPDATA%\\coolwave` on Windows.
 pub fn config_dir() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("coolwave")
+    let base = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+    };
+    base.unwrap_or_else(|| PathBuf::from(".")).join("coolwave")
 }
 
 pub fn path() -> PathBuf {

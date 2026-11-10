@@ -10,7 +10,7 @@
 //! ARGB header i -> direct channel i; mainboard LEDs -> direct channel 6 (AR36).
 
 use crate::color::Rgb;
-use crate::hidraw::{self, HidDevice};
+use crate::hid::{self, HidDevice};
 use std::io;
 use std::time::Duration;
 
@@ -55,7 +55,7 @@ pub struct Aura {
 
 impl Aura {
     pub fn open() -> io::Result<Self> {
-        let path = hidraw::find_usage_page(VID, PID, 0xFF72)
+        let path = hid::find_usage_page(VID, PID, 0xFF72)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Aura LED controller not found"))?;
         let mut a = Self { dev: HidDevice::open(path)?, firmware: String::new(), headers: Vec::new() };
         let fw = a.query(0x82)?;

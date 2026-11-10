@@ -140,6 +140,7 @@ impl Controller {
     }
 
     /// Closing the window keeps the app running in the tray.
+    #[cfg(not(egui_ui))]
     pub fn closes_to_tray(&self) -> bool {
         self.settings.close_to_tray && self.tray.available
     }
@@ -173,7 +174,7 @@ impl Controller {
     }
 
     /// Something is still running that the window should check on soon.
-    #[cfg(windows)]
+    #[cfg(egui_ui)]
     pub fn waiting(&self) -> bool {
         self.pending.is_some() || self.preview_rx.is_some()
     }
@@ -565,26 +566,6 @@ impl Controller {
     pub fn set_sleep_when_locked(&mut self, follow: bool) {
         self.settings.sleep_when_locked = follow;
         self.follow_lock.store(follow, Ordering::Relaxed);
-        self.persist();
-    }
-
-    pub fn set_start_at_sign_in(&mut self, start: bool) {
-        match settings::set_run_at_logon(start, self.settings.start_in_tray) {
-            Ok(()) => {
-                self.settings.start_with_windows = start;
-                self.persist();
-            }
-            Err(error) => self.status = format!("{error:#}"),
-        }
-    }
-
-    pub fn set_start_in_tray(&mut self, in_tray: bool) {
-        self.settings.start_in_tray = in_tray;
-        if self.settings.start_with_windows {
-            if let Err(error) = settings::set_run_at_logon(true, in_tray) {
-                self.status = format!("{error:#}");
-            }
-        }
         self.persist();
     }
 }
@@ -1167,7 +1148,8 @@ fn read_snapshot(panel: &mut Panel) -> Result<Snapshot> {
 /// Set in debug builds by STRIX_LC_SCREEN_DEMO, to look at the window next to a
 /// running copy: no USB, no single-instance check, and its own window title.
 pub fn demo() -> bool {
-    cfg!(debug_assertions) && std::env::var_os("STRIX_LC_SCREEN_DEMO").is_some()
+    let debug_demo = cfg!(debug_assertions) && std::env::var_os("STRIX_LC_SCREEN_DEMO").is_some();
+    debug_demo || std::env::var_os("COOLWAVE_UI_PREVIEW").is_some()
 }
 
 enum JobResult {

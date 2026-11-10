@@ -148,6 +148,12 @@ pub fn settings_path() -> PathBuf {
 }
 
 fn config_dir() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        if !appdata.is_empty() {
+            return PathBuf::from(appdata);
+        }
+    }
     if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
             return PathBuf::from(xdg);
@@ -164,29 +170,6 @@ fn config_dir() -> PathBuf {
 /// Coolwave's own "Start at login" covers the pump screen, so this never writes
 /// an autostart entry of its own.
 pub fn set_run_at_logon(_enable: bool, _hidden: bool) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(windows)]
-fn set_run_at_logon_windows(enable: bool, hidden: bool) -> Result<()> {
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_SET_VALUE};
-    use winreg::RegKey;
-    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let (run, _) = hkcu
-        .create_subkey_with_flags(
-            "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            KEY_SET_VALUE,
-        )
-        .context("could not open the Windows startup list")?;
-    if enable {
-        let exe = std::env::current_exe().context("could not find this program's path")?;
-        run.set_value(RUN_VALUE, &startup_command(&exe, hidden))
-            .context("could not add this program to Windows startup")?;
-    } else if let Err(error) = run.delete_value(RUN_VALUE) {
-        if error.kind() != std::io::ErrorKind::NotFound {
-            return Err(error).context("could not remove this program from Windows startup");
-        }
-    }
     Ok(())
 }
 
@@ -254,51 +237,15 @@ fn notify_show() {
 
 /// Keeps a single window. A second launch shows the one already running.
 pub fn claim_single_instance() -> bool {
-    #[cfg(windows)]
-    {
-        claim_single_instance_windows()
-    }
     #[cfg(target_os = "linux")]
     {
         claim_named("strix-lc-screen")
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    // On Windows the Coolwave window already allows only one copy.
+    #[cfg(not(target_os = "linux"))]
     {
         true
     }
-}
-
-#[cfg(windows)]
-fn claim_single_instance_windows() -> bool {
-    use std::ffi::c_void;
-    unsafe extern "system" {
-        fn CreateMutexW(attrs: *mut c_void, initial_owner: i32, name: *const u16) -> *mut c_void;
-        fn GetLastError() -> u32;
-        fn FindWindowW(class: *const u16, window: *const u16) -> *mut c_void;
-    }
-    const ERROR_ALREADY_EXISTS: u32 = 183;
-    let name: Vec<u16> = "Local\\strix-lc-screen"
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    unsafe {
-        let handle = CreateMutexW(std::ptr::null_mut(), 0, name.as_ptr());
-        if handle.is_null() {
-            return true;
-        }
-        if GetLastError() == ERROR_ALREADY_EXISTS {
-            let title: Vec<u16> = "Pump screen"
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
-            let hwnd = FindWindowW(std::ptr::null(), title.as_ptr());
-            if !hwnd.is_null() {
-                crate::gui::reveal_pump_window();
-            }
-            return false;
-        }
-    }
-    true
 }
 
 #[cfg(target_os = "linux")]

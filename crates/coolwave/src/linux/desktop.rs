@@ -3,19 +3,19 @@
 use std::path::PathBuf;
 
 pub const ICON_NAME: &str = "io.github.xnixy.Coolwave";
-const ICON_SVG: &[u8] = include_bytes!("../../../data/io.github.xnixy.Coolwave.svg");
+const ICON_SVG: &[u8] = include_bytes!("../../../../data/io.github.xnixy.Coolwave.svg");
 
 /// PNG renders: GNOME Shell on this system has no SVG pixbuf loader, so ship bitmaps too.
 pub const ICON_PNGS: &[(u32, &[u8])] = &[
-    (16, include_bytes!("../../../data/icons/coolwave-16.png")),
-    (22, include_bytes!("../../../data/icons/coolwave-22.png")),
-    (24, include_bytes!("../../../data/icons/coolwave-24.png")),
-    (32, include_bytes!("../../../data/icons/coolwave-32.png")),
-    (48, include_bytes!("../../../data/icons/coolwave-48.png")),
-    (64, include_bytes!("../../../data/icons/coolwave-64.png")),
-    (128, include_bytes!("../../../data/icons/coolwave-128.png")),
-    (256, include_bytes!("../../../data/icons/coolwave-256.png")),
-    (512, include_bytes!("../../../data/icons/coolwave-512.png")),
+    (16, include_bytes!("../../../../data/icons/coolwave-16.png")),
+    (22, include_bytes!("../../../../data/icons/coolwave-22.png")),
+    (24, include_bytes!("../../../../data/icons/coolwave-24.png")),
+    (32, include_bytes!("../../../../data/icons/coolwave-32.png")),
+    (48, include_bytes!("../../../../data/icons/coolwave-48.png")),
+    (64, include_bytes!("../../../../data/icons/coolwave-64.png")),
+    (128, include_bytes!("../../../../data/icons/coolwave-128.png")),
+    (256, include_bytes!("../../../../data/icons/coolwave-256.png")),
+    (512, include_bytes!("../../../../data/icons/coolwave-512.png")),
 ];
 
 fn data_home() -> PathBuf {

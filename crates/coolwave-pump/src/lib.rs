@@ -7,7 +7,7 @@ mod firmware;
 mod frame;
 mod gpu;
 mod hid;
-mod hwinfo;
+use coolwave_core::hwinfo;
 mod layout;
 mod lock;
 mod media;
@@ -18,6 +18,12 @@ mod session;
 mod settings;
 mod stats;
 mod tray;
+#[cfg(egui_ui)]
+mod gui;
+#[cfg(not(egui_ui))]
 mod ui;
 
+#[cfg(egui_ui)]
+pub use gui::PumpPage;
+#[cfg(not(egui_ui))]
 pub use ui::{page, PumpPage};

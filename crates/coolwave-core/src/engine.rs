@@ -399,8 +399,8 @@ fn run_device<D: Device>(ctx: Ctx, mut dev: D) {
 
 fn run_sensors(ctx: Ctx) {
     while !ctx.stop.load(Ordering::Relaxed) {
-        if let Some(t) = hwmon::temperatures().into_iter().find(|t| t.chip == "k10temp") {
-            ctx.shared.lock().unwrap().cpu_temp = t.celsius;
+        if let Some(celsius) = hwmon::cpu_temperature() {
+            ctx.shared.lock().unwrap().cpu_temp = celsius;
         }
         for _ in 0..10 {
             if ctx.stop.load(Ordering::Relaxed) {

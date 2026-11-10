@@ -6,7 +6,8 @@ pub mod effects;
 pub mod ene;
 pub mod engine;
 pub mod eurux;
-pub mod hidraw;
+pub mod hid;
+pub mod hwinfo;
 pub mod hwmon;
 pub mod settings;
 

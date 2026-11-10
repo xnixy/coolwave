@@ -39,11 +39,11 @@ impl ksni::Tray for CoolTray {
 
     fn icon_name(&self) -> String {
         // Empty name: hosts must use the pixmaps (no SVG/theme lookup problems).
-        if self.icons.is_empty() { crate::desktop::ICON_NAME.into() } else { String::new() }
+        if self.icons.is_empty() { super::desktop::ICON_NAME.into() } else { String::new() }
     }
 
     fn icon_theme_path(&self) -> String {
-        crate::desktop::icon_theme_dir().display().to_string()
+        super::desktop::icon_theme_dir().display().to_string()
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
@@ -69,7 +69,7 @@ impl ksni::Tray for CoolTray {
         vec![
             StandardItem {
                 label: "Open Coolwave".into(),
-                icon_name: crate::desktop::ICON_NAME.into(),
+                icon_name: super::desktop::ICON_NAME.into(),
                 activate: Box::new(|t: &mut Self| t.send(Command::Show)),
                 ..Default::default()
             }

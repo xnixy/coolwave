@@ -3,10 +3,36 @@ name = "coolwave"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Build the egui window on Linux as well, to work on it without a Windows machine.
+egui = ["dep:coolwave-ui", "dep:eframe", "dep:image", "coolwave-pump/egui", "eframe/wayland", "eframe/x11"]
+
 [dependencies]
-adw = { version = "0.9.2", package = "libadwaita", features = ["v1_5"] }
 coolwave-core = { version = "0.1.0", path = "../coolwave-core" }
 coolwave-pump = { version = "0.1.0", path = "../coolwave-pump" }
+coolwave-ui = { version = "0.1.0", path = "../coolwave-ui", optional = true }
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+toml = "1.1.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+adw = { version = "0.9.2", package = "libadwaita", features = ["v1_5"] }
 gtk = { version = "0.11.5", package = "gtk4", features = ["v4_10"] }
 ksni = { version = "0.3.7", features = ["blocking"] }
-toml = "1.1.8"
+
+[target.'cfg(windows)'.dependencies]
+coolwave-ui = { version = "0.1.0", path = "../coolwave-ui" }
+eframe = { version = "0.31", default-features = false, features = ["default_fonts", "glow"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+raw-window-handle = "0.6"
+tray-icon = "0.20"
+winreg = "0.55"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

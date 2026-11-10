@@ -17,6 +17,7 @@ pub struct Crop {
 }
 
 impl Crop {
+    #[cfg(test)]
     pub fn full() -> Self {
         Self {
             zoom: 1.0,

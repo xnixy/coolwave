@@ -1,0 +1,18 @@
+[package]
+name = "coolwave-ui"
+version = "0.1.0"
+edition = "2024"
+description = "The look Coolwave shares with Blurman: palette, cards and small egui widgets"
+license = "MIT"
+
+[dependencies]
+egui = "0.31"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_Controls",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }

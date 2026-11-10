@@ -41,6 +41,34 @@ curl -fsSL https://raw.githubusercontent.com/xnixy/coolwave/main/uninstall.sh | 
 
 `ffmpeg` is needed for photos and videos on the pump screen.
 
+## Windows
+
+Coolwave also builds for Windows 10 and 11. The window there is drawn with egui in the same
+frosted look as [Blurman](https://github.com/xnixy/blurman). It needs no installer, no admin
+rights and no extra driver: the USB devices are reached through the Windows HID driver, and the
+graphics card through NVAPI, which comes with the NVIDIA driver.
+
+```powershell
+git clone https://github.com/xnixy/coolwave.git
+cd coolwave
+cargo build --release -p coolwave
+```
+
+The app is `target\release\coolwave.exe`. Quit Armoury Crate and the ASUS pump screen program
+first, since they use the same USB connections. Settings are in `%APPDATA%\coolwave\`.
+
+What is different from Linux:
+
+- **Motherboard fan headers and the AIO pump** are not controlled. Windows only lets a kernel
+  driver reach the fan chip, and Coolwave does not ship one. They follow the fan curves set in
+  the BIOS. The ROG EURUX fan ports work as on Linux.
+- **CPU temperature** needs [HWiNFO](https://www.hwinfo.com/) running with **Shared Memory
+  Support** turned on, both for the pump screen and as the source of a EURUX fan curve. Without
+  it a curve can follow the graphics card's temperature. A curve whose sensor is gone runs its
+  fans at 100 %.
+- `ffmpeg.exe` must be on the `PATH` or next to `coolwave.exe` for photos and videos on the pump
+  screen.
+
 ## Supported hardware
 
 Developed and tested on a ROG Crosshair X870E Dark Hero system.
@@ -71,9 +99,12 @@ cargo build --release
 cargo test --workspace
 COOLWAVE_DEBUG=1 ./target/release/coolwave          # device status and frame rates
 cargo run --release -p coolwave-core --example showcase   # cycle through effects headless
+cargo check -p coolwave --target x86_64-pc-windows-gnu    # the Windows build, from Linux
+COOLWAVE_UI_PREVIEW=1 cargo run -p coolwave --features egui   # the Windows window on Linux, no devices touched
 ```
 
-Crates: `coolwave-core` (device drivers, effects engine, settings), `coolwave` (the GTK app),
+Crates: `coolwave-core` (device drivers, effects engine, settings), `coolwave` (the GTK app on
+Linux, the egui app on Windows), `coolwave-ui` (the look shared with Blurman),
 `coolwave-fanctl` (root fan helper), `coolwave-pump` (pump screen, merged from
 [strix-lc-screen](https://github.com/xnixy/strix-lc-screen)). Protocol notes are in the doc
 comments at the top of `crates/coolwave-core/src/{eurux,aura,ene}.rs`.

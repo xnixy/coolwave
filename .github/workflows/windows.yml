@@ -1,0 +1,28 @@
+name: Windows build
+
+# Every push and pull request builds and tests the Windows app. The exe is kept
+# with the run's artifacts.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test
+        run: cargo test --locked -p coolwave-core -p coolwave-pump -p coolwave
+
+      - name: Build release
+        run: cargo build --release --locked -p coolwave
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: coolwave-windows
+          path: target/release/coolwave.exe

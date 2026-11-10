@@ -17,7 +17,7 @@
 //! Modes 0x60-0x62 are configuration commands and are not used.
 
 use crate::color::Rgb;
-use crate::hidraw::{self, HidDevice};
+use crate::hid::{self, HidDevice};
 use std::io;
 
 pub const VID: u16 = 0x0B05;
@@ -118,7 +118,7 @@ pub struct Eurux {
 
 impl Eurux {
     pub fn open() -> io::Result<Self> {
-        let path = hidraw::find(VID, PID)
+        let path = hid::find(VID, PID)
             .into_iter()
             .next()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ROG EURUX controller not found"))?;
