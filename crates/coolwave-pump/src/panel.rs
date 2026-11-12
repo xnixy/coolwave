@@ -90,6 +90,12 @@ fn text_widget(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget) {
         let radius = (h * 0.22).min(24.0);
         fill_rounded(canvas, x0, y0, x0 + w, y0 + h, radius, SHADE);
     }
+    match widget.metric {
+        Metric::Time if !widget.caption => return time_widget(canvas, readings, widget),
+        // The tag needs a wide box; anything else keeps the plain line.
+        Metric::Date if !widget.caption && w >= h * 2.2 => return date_widget(canvas, readings, widget),
+        _ => {}
+    }
     let pad = (w * 0.06).min(16.0);
     let inner = w - pad * 2.0;
     let center = x0 + w / 2.0;
@@ -141,6 +147,64 @@ fn text_widget(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget) {
             inner,
         );
     }
+}
+
+/// The time in large digits with the colon in the widget's color, over a bar
+/// that fills through the minute in five-second blocks.
+fn time_widget(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget) {
+    let (bold, _) = fonts();
+    let (x0, y0, w, h) = (widget.x, widget.y, widget.w, widget.h);
+    let accent = widget.color;
+    // A short box has no room for the bar.
+    let bar = if h >= 70.0 { (h * 0.08).max(6.0) } else { 0.0 };
+    let digits = h - bar - if bar > 0.0 { h * 0.1 } else { 0.0 };
+    let (hours, minutes) = (format!("{:02}", readings.time.hour), format!("{:02}", readings.time.minute));
+    let room = w - (w * 0.06).min(16.0) * 2.0;
+    let natural = |size: f32| measure(bold, size, &hours) + measure(bold, size, ":") + measure(bold, size, &minutes);
+    let size = digits * 1.12;
+    let size = if natural(size) > room { size * room / natural(size) } else { size };
+    let total = natural(size);
+    let baseline = y0 + digits / 2.0 + size * 0.33;
+    let mut pen = x0 + (w - total) / 2.0;
+    let second = readings.time.second.min(59);
+    // The colon ticks: bright on even seconds, dim on odd ones.
+    let colon = with_alpha(accent, if second % 2 == 0 { 255 } else { 110 });
+    for (part, color) in [(hours.as_str(), WHITE), (":", colon), (minutes.as_str(), WHITE)] {
+        let width = measure(bold, size, part);
+        text(canvas, bold, size, pen, baseline, part, color, Align::Left, width + 2.0);
+        pen += width;
+    }
+    if bar > 0.0 {
+        const BLOCKS: usize = 12;
+        let length = (total * 1.1).min(w * 0.9);
+        let (left, top) = (x0 + (w - length) / 2.0, y0 + h - bar);
+        fill_rounded(canvas, left - 4.0, top - 3.0, left + length + 4.0, top + bar + 3.0, 3.0, with_alpha(PLATE, 170));
+        let done = second as usize / 5;
+        seg_strip(canvas, left, top, left + length, top + bar, BLOCKS, 3.0, 0.0, |index| if index < done { with_alpha(accent, 255) } else { GHOST });
+        // The block being filled grows a fifth each second.
+        let pitch = (length + 3.0) / BLOCKS as f32;
+        let start = left + pitch * done as f32;
+        let share = (second % 5 + 1) as f32 / 5.0;
+        fill_rect(canvas, start, top, start + (pitch - 3.0) * share, top + bar, WHITE);
+    }
+}
+
+/// The weekday on a slanted block in the widget's color, then the day and month.
+fn date_widget(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget) {
+    let (bold, semi) = fonts();
+    let (x0, y0, w, h) = (widget.x, widget.y, widget.w, widget.h);
+    let line = readings.text(Metric::Date);
+    let (weekday, rest) = line.split_once(' ').unwrap_or((line.as_str(), ""));
+    let (lean, pad, gap) = (h * 0.3, h * 0.32, h * 0.3);
+    let natural = |size: f32| measure(bold, size, weekday) + pad * 2.0 + lean + gap + measure(semi, size, rest);
+    let size = h * 0.8;
+    let size = if natural(size) > w { size * w / natural(size) } else { size };
+    let baseline = y0 + h / 2.0 + size * 0.33;
+    let tag = measure(bold, size, weekday) + pad * 2.0 + lean;
+    let left = x0 + (w - natural(size)) / 2.0;
+    seg_strip(canvas, left, y0 + h * 0.06, left + tag, y0 + h * 0.94, 1, 0.0, lean, |_| with_alpha(widget.color, 255));
+    text(canvas, bold, size, left + pad + lean / 2.0, baseline, weekday, with_alpha(PLATE, 255), Align::Left, tag);
+    text(canvas, semi, size, left + tag + gap, baseline, rest, WHITE, Align::Left, w);
 }
 
 /// What kind of reading a widget shows. Each kind has its own instrument, so
@@ -1265,6 +1329,7 @@ mod tests {
 
     fn sample() -> Readings {
         let mut readings = Readings::default();
+        readings.time = crate::sensors::LocalTime { year: 2026, month: 11, day: 12, weekday: 4, hour: 12, minute: 47, second: 38 };
         readings.set(Metric::CpuUsage, 37.0, Some(100.0));
         readings.set(Metric::GpuTemp, 58.0, None);
         readings.set(Metric::GpuUsage, 64.0, Some(100.0));

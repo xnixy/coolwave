@@ -492,6 +492,7 @@ mod tests {
                 weekday: 1,
                 hour: 9,
                 minute: 5,
+                second: 0,
             },
             ..Readings::default()
         };

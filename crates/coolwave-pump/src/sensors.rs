@@ -31,6 +31,7 @@ pub struct LocalTime {
     pub weekday: u8,
     pub hour: u8,
     pub minute: u8,
+    pub second: u8,
 }
 
 pub fn cpu_usage(before: CpuTimes, after: CpuTimes) -> Option<f64> {
@@ -341,6 +342,7 @@ mod windows {
             weekday: now.weekday as u8,
             hour: now.hour as u8,
             minute: now.minute as u8,
+            second: now.second as u8,
         }
     }
 }
@@ -451,6 +453,7 @@ mod linux {
             weekday: tm[6] as u8,
             hour: tm[2] as u8,
             minute: tm[1] as u8,
+            second: tm[0] as u8,
         }
     }
 }
