@@ -8,10 +8,13 @@ use crate::gpu;
 use crate::hwinfo::{self, Kind};
 use crate::sensors::{self, CpuTimes, DiskCounters, LocalTime, Traffic};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const INTERVAL: Duration = Duration::from_secs(1);
+/// How many past samples a reading keeps for its graph: one minute.
+const HISTORY: usize = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -175,6 +178,8 @@ impl Value {
 #[derive(Clone, Debug, Default)]
 pub struct Readings {
     values: HashMap<Metric, Value>,
+    /// The last minute of each reading, oldest first. Shared, as readings are copied for every frame.
+    history: Arc<HashMap<Metric, Vec<f64>>>,
     pub time: LocalTime,
     /// Show temperatures in Fahrenheit. Bars still use the Celsius scale.
     pub fahrenheit: bool,
@@ -197,15 +202,42 @@ impl Readings {
         self.get(metric).is_some()
     }
 
-    /// How full the bar under a reading is, from 0 to 1.
-    pub fn fraction(&self, metric: Metric) -> Option<f64> {
-        let value = self.get(metric)?;
+    /// The top of a reading's scale, when it has one.
+    fn top(&self, metric: Metric) -> Option<f64> {
         let max = match metric {
             Metric::CpuTemp | Metric::GpuTemp => Some(100.0),
             Metric::CoolantTemp => Some(60.0),
-            _ => value.max,
+            _ => self.get(metric)?.max,
         }?;
-        (max > 0.0).then(|| (value.now / max).clamp(0.0, 1.0))
+        (max > 0.0).then_some(max)
+    }
+
+    /// How full the bar under a reading is, from 0 to 1.
+    pub fn fraction(&self, metric: Metric) -> Option<f64> {
+        let value = self.get(metric)?;
+        Some((value.now / self.top(metric)?).clamp(0.0, 1.0))
+    }
+
+    /// The last minute of a reading, oldest first. Empty until there is one.
+    pub fn past(&self, metric: Metric) -> &[f64] {
+        self.history.get(&metric).map_or(&[], Vec::as_slice)
+    }
+
+    /// The reading split into its number and its unit, to draw them at different sizes.
+    pub fn parts(&self, metric: Metric) -> (String, String) {
+        let text = self.text(metric);
+        if matches!(metric, Metric::Time | Metric::Date) {
+            return (text, String::new());
+        }
+        for unit in ["%", "°C", "°F"] {
+            if let Some(number) = text.strip_suffix(unit) {
+                return (number.into(), unit.into());
+            }
+        }
+        match text.rsplit_once(' ') {
+            Some((number, unit)) => (number.into(), unit.into()),
+            None => (text, String::new()),
+        }
     }
 
     /// The reading as drawn on the pump. Missing readings show a dash.
@@ -248,6 +280,11 @@ impl Readings {
     pub fn set(&mut self, metric: Metric, now: f64, max: Option<f64>) {
         self.values.insert(metric, Value { now, max });
     }
+
+    #[cfg(test)]
+    pub fn set_history(&mut self, metric: Metric, past: Vec<f64>) {
+        Arc::make_mut(&mut self.history).insert(metric, past);
+    }
 }
 
 fn clock(mhz: f64) -> String {
@@ -278,6 +315,7 @@ pub struct Sampler {
     cpu: Option<CpuTimes>,
     network: Option<(Traffic, Instant)>,
     disk: Option<DiskCounters>,
+    history: HashMap<Metric, VecDeque<f64>>,
 }
 
 impl Default for Sampler {
@@ -286,6 +324,7 @@ impl Default for Sampler {
             cpu: None,
             network: None,
             disk: DiskCounters::open(),
+            history: HashMap::new(),
         }
     }
 }
@@ -378,8 +417,24 @@ impl Sampler {
             );
         }
 
+        // A reading that went away starts its graph over when it comes back.
+        self.history.retain(|metric, _| values.contains_key(metric));
+        for (metric, value) in &values {
+            let past = self.history.entry(*metric).or_default();
+            if past.len() == HISTORY {
+                past.pop_front();
+            }
+            past.push_back(value.now);
+        }
+        let history = self
+            .history
+            .iter()
+            .map(|(metric, past)| (*metric, past.iter().copied().collect()))
+            .collect();
+
         Readings {
             values,
+            history: Arc::new(history),
             time: sensors::local_time(),
             fahrenheit: false,
         }

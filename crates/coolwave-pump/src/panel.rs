@@ -15,15 +15,21 @@ use std::time::{Duration, Instant};
 pub const SIZE: u32 = 720;
 
 const WHITE: Rgba<u8> = Rgba([255, 255, 255, 255]);
-const MUTED: Rgba<u8> = Rgba([178, 172, 184, 255]);
+const MUTED: Rgba<u8> = Rgba([206, 201, 213, 255]);
+/// Under every line of text, so it holds up on a bright picture or effect.
+const TEXT_SHADOW: Rgba<u8> = Rgba([0, 0, 0, 120]);
+
 const TRACK: Rgba<u8> = Rgba([255, 255, 255, 38]);
 /// Behind a widget with a backdrop.
 const SHADE: Rgba<u8> = Rgba([8, 6, 12, 190]);
-/// A tile without a backdrop.
-const FROST: Rgba<u8> = Rgba([255, 255, 255, 16]);
-/// Gauges open at the bottom: they start at the lower left and sweep 270°.
-const GAUGE_START: f32 = 135.0;
-const GAUGE_SWEEP: f32 = 270.0;
+/// Dials open at the bottom: they start at the lower left and sweep 240°.
+const DIAL_START: f32 = 150.0;
+const DIAL_SWEEP: f32 = 240.0;
+/// A segment that is not lit: a ghost of its shape, so the whole scale stays visible.
+const GHOST: Rgba<u8> = Rgba([255, 255, 255, 60]);
+/// The plate under a tile or gauge. Nearly opaque, so a bright picture behind it cannot muddy it.
+const PLATE: [u8; 3] = [6, 6, 10];
+const PLATE_EDGE: Rgba<u8> = Rgba([255, 255, 255, 44]);
 
 fn fonts() -> &'static (FontRef<'static>, FontRef<'static>) {
     static FONTS: OnceLock<(FontRef<'static>, FontRef<'static>)> = OnceLock::new();
@@ -137,73 +143,540 @@ fn text_widget(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget) {
     }
 }
 
-/// A card with a colored edge, the name and value on the left, and a bar along the bottom.
-fn tile_widget(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget) {
-    let (bold, semi) = fonts();
-    let (x0, y0, w, h) = (widget.x, widget.y, widget.w, widget.h);
-    let fill = if widget.backdrop { SHADE } else { FROST };
-    fill_rounded(canvas, x0, y0, x0 + w, y0 + h, (h * 0.12).min(18.0), fill);
-    let color = color_of(widget);
-    fill_rounded(
-        canvas,
-        x0,
-        y0 + h * 0.14,
-        x0 + 5.0,
-        y0 + h * 0.32,
-        2.5,
-        color,
-    );
-    let scale = (h / 170.0).clamp(0.3, 3.0);
-    let pad = 22.0 * scale.min(1.0);
-    let inner = w - pad * 2.0;
-    let fraction = readings.fraction(widget.metric);
-    if widget.caption {
-        text(
-            canvas,
-            semi,
-            28.0 * scale,
-            x0 + pad,
-            y0 + 44.0 * scale,
-            widget.metric.label(),
-            MUTED,
-            Align::Left,
-            inner,
-        );
-    }
-    let value_size = 74.0 * scale;
-    let baseline = if widget.caption {
-        y0 + h * 0.5 + value_size * 0.42
-    } else if fraction.is_some() {
-        y0 + h * 0.45 + value_size * 0.35
-    } else {
-        y0 + h * 0.5 + value_size * 0.35
-    };
-    text(
-        canvas,
-        bold,
-        value_size,
-        x0 + pad,
-        baseline,
-        &readings.text(widget.metric),
-        value_color(widget.metric),
-        Align::Left,
-        inner,
-    );
-    if let Some(fraction) = fraction {
-        let thickness = (6.0 * scale).max(3.0);
-        bar(
-            canvas,
-            x0 + pad,
-            y0 + h - 26.0 * scale,
-            inner,
-            thickness,
-            fraction,
-            color,
-        );
+/// What kind of reading a widget shows. Each kind has its own instrument, so
+/// readings can be told apart by shape before reading a word.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Family {
+    /// How busy a processor is: a segmented dial with a redline.
+    Load,
+    /// A temperature: a strip of blocks from blue to red.
+    Heat,
+    /// A clock speed: a rising staircase.
+    Clock,
+    /// Watts: a half-moon band.
+    Power,
+    /// How full memory or a disk is: a grid of cells.
+    Capacity,
+    /// Bytes per second: a histogram of the last minute.
+    Rate,
+    /// A fan or the pump: a turning rotor.
+    Rotor,
+    /// The clock and date have no instrument.
+    Plain,
+}
+
+fn family(metric: Metric) -> Family {
+    use Metric::*;
+    match metric {
+        CpuUsage | GpuUsage => Family::Load,
+        CpuTemp | GpuTemp | CoolantTemp => Family::Heat,
+        CpuClock | GpuClock => Family::Clock,
+        CpuPower | GpuPower => Family::Power,
+        MemoryUsage | MemoryUsed | GpuMemory | DiskUsage => Family::Capacity,
+        DiskRead | DiskWrite | NetDown | NetUp => Family::Rate,
+        PumpSpeed | FanSpeed | GpuFan => Family::Rotor,
+        Time | Date => Family::Plain,
     }
 }
 
-/// A round gauge with the value in the middle and the name in the opening at the bottom.
+/// The bottom and top of a reading's instrument. Readings without a real
+/// maximum get a usual one, raised to the highest value of the last minute.
+fn span(readings: &Readings, metric: Metric) -> Option<(f64, f64)> {
+    use Metric::*;
+    let value = readings.get(metric)?;
+    let peak = readings.past(metric).iter().copied().fold(value.now, f64::max);
+    Some(match metric {
+        // The bottom fifth of a temperature scale is never reached, so it starts at 20 °C.
+        CpuTemp | GpuTemp => (20.0, 100.0),
+        CoolantTemp => (20.0, 60.0),
+        CpuClock => (0.0, peak.max(6000.0)),
+        GpuClock => (0.0, peak.max(3200.0)),
+        CpuPower => (0.0, peak.max(250.0)),
+        GpuPower => (0.0, peak.max(600.0)),
+        // A floor keeps idle noise from filling the whole graph.
+        DiskRead | DiskWrite => (0.0, (peak * 1.25).max(1_048_576.0)),
+        NetDown | NetUp => (0.0, (peak * 1.25).max(65_536.0)),
+        PumpSpeed | FanSpeed => (0.0, peak.max(3000.0)),
+        _ => (0.0, value.max.filter(|max| *max > 0.0)?),
+    })
+}
+
+/// How far along its instrument a reading is now, and at its highest in the last minute. Both 0 to 1.
+fn level(readings: &Readings, metric: Metric) -> Option<(f32, f32)> {
+    let (low, high) = span(readings, metric)?;
+    let now = readings.get(metric)?.now;
+    let peak = readings.past(metric).iter().copied().fold(now, f64::max);
+    let at = |value: f64| ((value - low) / (high - low)).clamp(0.0, 1.0) as f32;
+    Some((at(now), at(peak)))
+}
+
+fn mix(from: [u8; 3], to: [u8; 3], amount: f32) -> [u8; 3] {
+    let amount = amount.clamp(0.0, 1.0);
+    std::array::from_fn(|channel| (f32::from(from[channel]) + (f32::from(to[channel]) - f32::from(from[channel])) * amount).round() as u8)
+}
+
+fn with_alpha(color: [u8; 3], alpha: u8) -> Rgba<u8> {
+    Rgba([color[0], color[1], color[2], alpha])
+}
+
+/// Captions and units: the widget's color, lightened so it reads as text.
+fn tint_of(widget: &Widget) -> Rgba<u8> {
+    with_alpha(mix(widget.color, [255, 255, 255], 0.45), 255)
+}
+
+/// The warning color for a redline. Red, unless the widget is red already.
+fn hot_for(accent: [u8; 3]) -> [u8; 3] {
+    let [r, g, b] = accent;
+    if r > 200 && g < 120 && b < 130 {
+        [255, 214, 90]
+    } else {
+        [255, 48, 56]
+    }
+}
+
+/// The color of a temperature scale at a point from 0 (cold) to 1 (hot).
+fn heat(at: f32) -> [u8; 3] {
+    const STOPS: [(f32, [u8; 3]); 5] = [
+        (0.0, [40, 200, 255]),
+        (0.45, [90, 230, 120]),
+        (0.65, [255, 190, 40]),
+        (0.8, [255, 110, 30]),
+        (1.0, [255, 40, 50]),
+    ];
+    let at = at.clamp(0.0, 1.0);
+    for pair in STOPS.windows(2) {
+        let ((from, cold), (to, hot)) = (pair[0], pair[1]);
+        if at <= to {
+            return mix(cold, hot, (at - from) / (to - from));
+        }
+    }
+    STOPS[4].1
+}
+
+/// How many of `count` segments are lit. Anything above nothing lights the first one.
+fn lit_of(at: f32, count: usize) -> usize {
+    if at <= 0.005 {
+        0
+    } else {
+        ((at * count as f32).round() as usize).clamp(1, count)
+    }
+}
+
+/// The color of segment `index` of `count` on a scale that is `lit` segments
+/// full: lit segments are solid, unlit ones a ghost of the same shape.
+fn segment_color(fam: Family, accent: [u8; 3], index: usize, count: usize, lit: usize) -> Rgba<u8> {
+    let on = index < lit;
+    let place = (index as f32 + 0.5) / count as f32;
+    match fam {
+        // The whole temperature scale stays visible, so the unlit end shows how far there is to go.
+        Family::Heat => with_alpha(heat(place), if on { 255 } else { 62 }),
+        Family::Load if place > 0.85 => with_alpha(hot_for(accent), if on { 255 } else { 100 }),
+        _ if !on => GHOST,
+        // The newest lit segment is brighter, like the tip of a needle.
+        _ if index + 1 == lit => with_alpha(mix(accent, [255, 255, 255], 0.5), 255),
+        _ => with_alpha(accent, 255),
+    }
+}
+
+/// The plate under a tile: near-black, with the top left and bottom right
+/// corners cut off, a faint edge, and brackets in the widget's color at the cuts.
+fn plate(canvas: &mut RgbaImage, x0: f32, y0: f32, x1: f32, y1: f32, solid: bool, accent: [u8; 3]) {
+    let (w, h) = (x1 - x0, y1 - y0);
+    let cut = (0.16 * w.min(h)).clamp(8.0, 22.0);
+    let fill = with_alpha(PLATE, if solid { 232 } else { 130 });
+    let bracket = with_alpha(accent, 255);
+    for py in (y0.floor().max(0.0) as i32)..(y1.ceil().min(SIZE as f32) as i32) {
+        for px in (x0.floor().max(0.0) as i32)..(x1.ceil().min(SIZE as f32) as i32) {
+            let (fx, fy) = (px as f32 + 0.5, py as f32 + 0.5);
+            // Distances outside each edge; the largest is the distance outside the plate.
+            let top = (y0 - fy).max((cut - (fx - x0) - (fy - y0)) * std::f32::consts::FRAC_1_SQRT_2);
+            let bottom = (fy - y1).max((cut - (x1 - fx) - (y1 - fy)) * std::f32::consts::FRAC_1_SQRT_2);
+            let outside = (x0 - fx).max(fx - x1).max(top).max(bottom);
+            let inside = (0.5 - outside).clamp(0.0, 1.0);
+            if inside <= 0.0 {
+                continue;
+            }
+            blend(canvas, px, py, fill, inside);
+            if (top > -3.5 && fx < x0 + w * 0.3) || (bottom > -3.5 && fx > x1 - w * 0.3) {
+                blend(canvas, px, py, bracket, inside);
+            } else if outside > -2.5 {
+                blend(canvas, px, py, PLATE_EDGE, inside * (outside + 2.5).clamp(0.0, 1.0));
+            }
+        }
+    }
+}
+
+/// A band around a circle, cut into `count` segments with gaps of `gap` degrees.
+/// Angles are in degrees, clockwise from three o'clock. `color` is asked per segment.
+#[allow(clippy::too_many_arguments)]
+fn seg_arc(
+    canvas: &mut RgbaImage,
+    cx: f32,
+    cy: f32,
+    outer: f32,
+    thickness: f32,
+    start: f32,
+    sweep: f32,
+    count: usize,
+    gap: f32,
+    color: impl Fn(usize) -> Rgba<u8>,
+) {
+    if count == 0 || sweep <= 0.0 || outer <= 0.0 {
+        return;
+    }
+    let inner = (outer - thickness).max(0.0);
+    let step = sweep / count as f32;
+    for py in ((cy - outer - 1.0).floor().max(0.0) as i32)..((cy + outer + 1.0).ceil().min(SIZE as f32) as i32) {
+        for px in ((cx - outer - 1.0).floor().max(0.0) as i32)..((cx + outer + 1.0).ceil().min(SIZE as f32) as i32) {
+            let (dx, dy) = (px as f32 + 0.5 - cx, py as f32 + 0.5 - cy);
+            let square = dx * dx + dy * dy;
+            if square > (outer + 1.0) * (outer + 1.0) || square < (inner - 1.0).max(0.0).powi(2) {
+                continue;
+            }
+            let distance = square.sqrt();
+            let across = (outer - distance + 0.5).clamp(0.0, 1.0) * (distance - inner + 0.5).clamp(0.0, 1.0);
+            if across <= 0.0 {
+                continue;
+            }
+            let along = (dy.atan2(dx).to_degrees() - start).rem_euclid(360.0);
+            if along >= sweep {
+                continue;
+            }
+            let index = ((along / step) as usize).min(count - 1);
+            let within = along - index as f32 * step;
+            // How far inside the lit part of the segment, in pixels along the band.
+            let edge = (within - gap / 2.0).min(step - gap / 2.0 - within) * distance.to_radians();
+            let coverage = across * (edge + 0.5).clamp(0.0, 1.0);
+            if coverage > 0.0 {
+                blend(canvas, px, py, color(index), coverage);
+            }
+        }
+    }
+}
+
+/// A row of `count` blocks with `gap` pixels between them. `lean` pushes the
+/// top of every block that many pixels to the right, making parallelograms.
+#[allow(clippy::too_many_arguments)]
+fn seg_strip(
+    canvas: &mut RgbaImage,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    count: usize,
+    gap: f32,
+    lean: f32,
+    color: impl Fn(usize) -> Rgba<u8>,
+) {
+    let (width, height) = (x1 - x0 - lean, y1 - y0);
+    if count == 0 || width <= 0.0 || height <= 0.0 {
+        return;
+    }
+    let pitch = (width + gap) / count as f32;
+    for py in (y0.floor().max(0.0) as i32)..(y1.ceil().min(SIZE as f32) as i32) {
+        let fy = py as f32 + 0.5;
+        let rows = (fy - y0 + 0.5).clamp(0.0, 1.0).min((y1 - fy + 0.5).clamp(0.0, 1.0));
+        let shift = lean * (y1 - fy) / height;
+        for px in (x0.floor().max(0.0) as i32)..(x1.ceil().min(SIZE as f32) as i32) {
+            let along = px as f32 + 0.5 - x0 - shift;
+            if along < -0.5 {
+                continue;
+            }
+            let index = (along.max(0.0) / pitch) as usize;
+            if index >= count {
+                continue;
+            }
+            let within = along - index as f32 * pitch;
+            let columns = (within + 0.5).clamp(0.0, 1.0).min((pitch - gap - within + 0.5).clamp(0.0, 1.0));
+            if rows * columns > 0.0 {
+                blend(canvas, px, py, color(index), rows * columns);
+            }
+        }
+    }
+}
+
+fn fill_rect(canvas: &mut RgbaImage, x0: f32, y0: f32, x1: f32, y1: f32, color: Rgba<u8>) {
+    seg_strip(canvas, x0, y0, x1, y1, 1, 0.0, 0.0, |_| color);
+}
+
+/// The value with its unit after it, smaller and in the widget's tint. Shrunk
+/// together to fit `width`. `right` ends the line at `x` instead of starting it there.
+#[allow(clippy::too_many_arguments)]
+fn value_line(
+    canvas: &mut RgbaImage,
+    readings: &Readings,
+    widget: &Widget,
+    x: f32,
+    baseline: f32,
+    size: f32,
+    width: f32,
+    right: bool,
+    color: Rgba<u8>,
+) {
+    let (bold, semi) = fonts();
+    let (value, unit) = readings.parts(widget.metric);
+    let natural = |size: f32| {
+        let unit_width = if unit.is_empty() { 0.0 } else { size * 0.08 + measure(semi, size * 0.42, &unit) };
+        measure(bold, size, &value) + unit_width
+    };
+    let size = if natural(size) > width && width > 0.0 { size * width / natural(size) } else { size };
+    if size < 8.0 {
+        return;
+    }
+    let value_width = measure(bold, size, &value);
+    let start = if right { x - natural(size) } else { x };
+    text(canvas, bold, size, start, baseline, &value, color, Align::Left, value_width + 2.0);
+    if !unit.is_empty() {
+        text(canvas, semi, size * 0.42, start + value_width + size * 0.08, baseline, &unit, tint_of(widget), Align::Left, width);
+    }
+}
+
+/// The name over the value, filling a region from its top left corner.
+#[allow(clippy::too_many_arguments)]
+fn value_block(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget, x: f32, y: f32, w: f32, h: f32, color: Rgba<u8>) {
+    let (_, semi) = fonts();
+    let caption_size = (h * 0.26).clamp(14.0, 30.0);
+    // A caption that would not fit over the value is left out, not squeezed.
+    if widget.caption && h >= 54.0 {
+        text(canvas, semi, caption_size, x, y + caption_size * 0.78, widget.metric.label(), tint_of(widget), Align::Left, w);
+        let size = (h - caption_size) * 0.92;
+        value_line(canvas, readings, widget, x, y + h - size * 0.04, size, w, false, color);
+    } else {
+        let size = h * 1.1;
+        value_line(canvas, readings, widget, x, y + h / 2.0 + size * 0.34, size, w, false, color);
+    }
+}
+
+/// A rectangle inside a widget.
+#[derive(Clone, Copy)]
+struct Area {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+/// A tile: a plate with the name and value, and the instrument that suits the reading.
+fn tile_widget(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget) {
+    let (x0, y0, w, h) = (widget.x, widget.y, widget.w, widget.h);
+    plate(canvas, x0, y0, x0 + w, y0 + h, widget.backdrop, widget.color);
+    let pad = (0.11 * h.min(w)).clamp(6.0, 18.0);
+    let inner = Area { x: x0 + pad, y: y0 + pad, w: w - pad * 2.0, h: h - pad * 2.0 };
+    let fam = family(widget.metric);
+    let (at, peak) = level(readings, widget.metric).unwrap_or((0.0, 0.0));
+    let mut color = value_color(widget.metric);
+    match fam {
+        Family::Load if at >= 0.85 => color = with_alpha(hot_for(widget.color), 255),
+        Family::Capacity if at >= 0.9 => color = with_alpha(hot_for(widget.color), 255),
+        Family::Heat if readings.has(widget.metric) => color = with_alpha(mix(heat(at), [255, 255, 255], 0.35), 255),
+        _ => {}
+    }
+    // Too small for an instrument: the value alone.
+    if fam == Family::Plain || w.min(h) < 80.0 {
+        value_block(canvas, readings, widget, inner.x, inner.y, inner.w, inner.h, color);
+        return;
+    }
+    let wide = w >= 1.6 * h;
+    // Where the instrument goes, and where that leaves the name and value.
+    let (instrument, words) = match (fam, wide) {
+        // Round instruments sit on the left, as tall as the tile.
+        (Family::Load | Family::Power | Family::Rotor, true) => {
+            let side = inner.h.min(inner.w * 0.45);
+            (
+                Area { x: inner.x, y: inner.y, w: side, h: inner.h },
+                Area { x: inner.x + side + pad, y: inner.y, w: inner.w - side - pad, h: inner.h },
+            )
+        }
+        (Family::Clock | Family::Capacity, true) => (
+            Area { x: inner.x + inner.w * 0.58, y: inner.y, w: inner.w * 0.42, h: inner.h },
+            Area { x: inner.x, y: inner.y, w: inner.w * 0.54, h: inner.h },
+        ),
+        (Family::Heat, true) => (
+            Area { x: inner.x, y: inner.y + inner.h * 0.8, w: inner.w, h: inner.h * 0.2 },
+            Area { x: inner.x, y: inner.y, w: inner.w, h: inner.h * 0.72 },
+        ),
+        (Family::Rate, _) => (
+            Area { x: inner.x, y: inner.y + inner.h * 0.52, w: inner.w, h: inner.h * 0.48 },
+            Area { x: inner.x, y: inner.y, w: inner.w, h: inner.h * 0.44 },
+        ),
+        // Not wide: the instrument runs along the bottom.
+        _ => (
+            Area { x: inner.x, y: inner.y + inner.h * 0.62, w: inner.w, h: inner.h * 0.38 },
+            Area { x: inner.x, y: inner.y, w: inner.w, h: inner.h * 0.54 },
+        ),
+    };
+    if fam == Family::Rate {
+        rate_words(canvas, readings, widget, words, color);
+    } else {
+        value_block(canvas, readings, widget, words.x, words.y, words.w, words.h, color);
+    }
+    let accent = widget.color;
+    match (fam, wide) {
+        (Family::Load, true) => {
+            // The dial opens at the bottom, so it is one and a half radii tall.
+            let radius = (instrument.h / 1.5).min(instrument.w / 2.0);
+            let (cx, cy) = (instrument.x + instrument.w / 2.0, instrument.y + (instrument.h - radius * 1.5) / 2.0 + radius);
+            dial(canvas, cx, cy, radius, radius * 0.32, 16, 3.0, fam, accent, at, peak);
+        }
+        (Family::Power, true) => {
+            let radius = instrument.h.min(instrument.w / 2.0);
+            let (cx, cy) = (instrument.x + instrument.w / 2.0, instrument.y + (instrument.h + radius) / 2.0);
+            seg_arc(canvas, cx, cy, radius, radius * 0.4, 180.0, 180.0, 1, 0.0, |_| GHOST);
+            seg_arc(canvas, cx, cy, radius, radius * 0.4, 180.0, 180.0 * at, 1, 0.0, |_| with_alpha(accent, 255));
+            if peak > 0.0 {
+                seg_arc(canvas, cx, cy, radius, radius * 0.4, 180.0 + 180.0 * peak - 1.5, 3.0, 1, 0.0, |_| WHITE);
+            }
+        }
+        (Family::Rotor, true) => {
+            let radius = instrument.h.min(instrument.w) / 2.0;
+            rotor(canvas, instrument.x + instrument.w / 2.0, instrument.y + instrument.h / 2.0, radius, widget.metric, readings, at, accent);
+        }
+        (Family::Clock, _) => ladder(canvas, instrument, accent, at),
+        (Family::Capacity, _) => cells(canvas, instrument, accent, at),
+        (Family::Rate, _) => scope(canvas, instrument, readings, widget.metric, accent),
+        // A pump or case fan has no scale to fill a strip with.
+        (Family::Rotor, false) if widget.metric != Metric::GpuFan => {}
+        _ => strip(canvas, instrument, fam, accent, at, peak),
+    }
+}
+
+/// A dial of lit segments that opens at the bottom, with a white mark at the highest point of the last minute.
+#[allow(clippy::too_many_arguments)]
+fn dial(canvas: &mut RgbaImage, cx: f32, cy: f32, radius: f32, thickness: f32, count: usize, gap: f32, fam: Family, accent: [u8; 3], at: f32, peak: f32) {
+    let lit = lit_of(at, count);
+    seg_arc(canvas, cx, cy, radius, thickness, DIAL_START, DIAL_SWEEP, count, gap, |index| segment_color(fam, accent, index, count, lit));
+    if peak > 0.0 {
+        let mark = (170.0 / radius).clamp(1.5, 5.0);
+        let angle = DIAL_START + (DIAL_SWEEP - mark) * peak;
+        seg_arc(canvas, cx, cy, radius, thickness, angle, mark, 1, 0.0, |_| WHITE);
+    }
+}
+
+/// A strip of slanted blocks along the bottom of a tile.
+fn strip(canvas: &mut RgbaImage, area: Area, fam: Family, accent: [u8; 3], at: f32, peak: f32) {
+    let count = ((area.w / 20.0) as usize).clamp(6, 14);
+    let height = area.h.min(30.0);
+    let (top, bottom) = (area.y + area.h - height, area.y + area.h);
+    let lean = height * 0.35;
+    let lit = lit_of(at, count);
+    seg_strip(canvas, area.x, top, area.x + area.w, bottom, count, 4.0, lean, |index| segment_color(fam, accent, index, count, lit));
+    if peak > 0.0 {
+        let x = area.x + (area.w - lean - 3.0) * peak;
+        seg_strip(canvas, x, top, x + 3.0 + lean, bottom, 1, 0.0, lean, |_| WHITE);
+    }
+}
+
+/// A staircase of bars; the top step lights white.
+fn ladder(canvas: &mut RgbaImage, area: Area, accent: [u8; 3], at: f32) {
+    const STEPS: usize = 8;
+    let lit = lit_of(at, STEPS);
+    let gap = 4.0;
+    let pitch = (area.w + gap) / STEPS as f32;
+    let tall = area.h.min(area.w * 0.9);
+    for step in 0..STEPS {
+        let height = tall * (0.25 + 0.75 * step as f32 / (STEPS - 1) as f32);
+        let x = area.x + pitch * step as f32;
+        let color = match step {
+            _ if step >= lit => GHOST,
+            _ if step + 1 == STEPS => WHITE,
+            _ => with_alpha(accent, 255),
+        };
+        fill_rect(canvas, x, area.y + area.h - height, x + pitch - gap, area.y + area.h, color);
+    }
+}
+
+/// A grid of cells that fills from the bottom left, row by row, like a tank.
+fn cells(canvas: &mut RgbaImage, area: Area, accent: [u8; 3], at: f32) {
+    const COLUMNS: usize = 8;
+    const ROWS: usize = 4;
+    let pitch = (area.w / COLUMNS as f32).min(area.h / ROWS as f32);
+    let gap = (pitch * 0.22).max(2.0);
+    let (left, top) = (area.x + area.w - pitch * COLUMNS as f32 + gap, area.y + (area.h - pitch * ROWS as f32 + gap) / 2.0);
+    let full = at * (COLUMNS * ROWS) as f32;
+    let lit = if at >= 0.9 { hot_for(accent) } else { accent };
+    for row in 0..ROWS {
+        for column in 0..COLUMNS {
+            let index = ((ROWS - 1 - row) * COLUMNS + column) as f32;
+            // The cell being filled shows how far along it is.
+            let share = (full - index).clamp(0.0, 1.0);
+            let (x, y) = (left + pitch * column as f32, top + pitch * row as f32);
+            fill_rect(canvas, x, y, x + pitch - gap, y + pitch - gap, GHOST);
+            if share > 0.0 {
+                fill_rect(canvas, x, y, x + pitch - gap, y + pitch - gap, with_alpha(lit, (255.0 * share) as u8));
+            }
+        }
+    }
+}
+
+/// The last minute as columns, newest on the right and white.
+fn scope(canvas: &mut RgbaImage, area: Area, readings: &Readings, metric: Metric, accent: [u8; 3]) {
+    let columns = ((area.w / 9.0) as usize).clamp(8, 30);
+    let pitch = area.w / columns as f32;
+    let past = readings.past(metric);
+    let (_, high) = span(readings, metric).unwrap_or((0.0, 1.0));
+    // Each column is the higher of two seconds, so a short burst is not lost.
+    let per = 2;
+    for column in 0..columns {
+        let age = (columns - 1 - column) * per;
+        let value = (0..per)
+            .filter_map(|offset| past.len().checked_sub(1 + age + offset).map(|index| past[index]))
+            .fold(0.0, f64::max);
+        let share = (value / high).clamp(0.0, 1.0) as f32;
+        let x = area.x + pitch * column as f32;
+        let (right, bottom) = (x + (pitch * 0.68).max(3.0), area.y + area.h);
+        fill_rect(canvas, x, bottom - 3.0, right, bottom, GHOST);
+        if share > 0.0 {
+            let color = if column + 1 == columns { WHITE } else { with_alpha(accent, 255) };
+            fill_rect(canvas, x, bottom - (area.h * share).max(3.0), right, bottom, color);
+        }
+    }
+}
+
+/// An arrow for the direction, the name, and the value on the right.
+fn rate_words(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget, area: Area, color: Rgba<u8>) {
+    let (_, semi) = fonts();
+    let caption_size = (area.h * 0.55).clamp(14.0, 28.0);
+    let arrow = caption_size * 0.62;
+    let down = matches!(widget.metric, Metric::NetDown | Metric::DiskWrite);
+    let middle = area.y + area.h / 2.0;
+    for py in (middle - arrow / 2.0).floor() as i32..(middle + arrow / 2.0).ceil() as i32 {
+        let along = ((py as f32 + 0.5 - (middle - arrow / 2.0)) / arrow).clamp(0.0, 1.0);
+        let half = arrow / 2.0 * if down { 1.0 - along } else { along };
+        let cx = area.x + arrow / 2.0;
+        fill_rect(canvas, cx - half, py as f32, cx + half, py as f32 + 1.0, with_alpha(widget.color, 255));
+    }
+    let mut left = area.x + arrow + 8.0;
+    if widget.caption {
+        let label = widget.metric.label();
+        let room = area.w * 0.45 - arrow - 8.0;
+        text(canvas, semi, caption_size, left, middle + caption_size * 0.33, label, tint_of(widget), Align::Left, room);
+        left += measure(semi, caption_size, label).min(room.max(0.0)) + 10.0;
+    }
+    let size = area.h * 1.15;
+    value_line(canvas, readings, widget, area.x + area.w, middle + size * 0.34, size, area.x + area.w - left, true, color);
+}
+
+/// A fan seen from the front: a ring with blades that turn faster the faster it runs.
+#[allow(clippy::too_many_arguments)]
+fn rotor(canvas: &mut RgbaImage, cx: f32, cy: f32, radius: f32, metric: Metric, readings: &Readings, at: f32, accent: [u8; 3]) {
+    // The pump has a few fat blades, a fan more and thinner ones.
+    let blades = if metric == Metric::PumpSpeed || radius < 30.0 { 3 } else { 5 };
+    let speed = if readings.has(metric) { at.clamp(0.15, 1.0) } else { 0.0 };
+    // Turned by the clock, so it needs no state. Slow enough that ten frames a second still read as turning.
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |elapsed| (elapsed.as_millis() % 3_600_000) as f32 / 1000.0);
+    let turn = (seconds * speed * 200.0).rem_euclid(360.0);
+    let ring = (radius * 0.08).max(3.0);
+    seg_arc(canvas, cx, cy, radius, ring, 0.0, 360.0, 1, 0.0, |_| with_alpha(accent, 255));
+    let reach = radius - ring - 3.0;
+    let hub = radius * 0.26;
+    let step = 360.0 / blades as f32;
+    seg_arc(canvas, cx, cy, reach, reach - hub, turn, 360.0, blades, step * 0.5, |_| with_alpha(mix(accent, [255, 255, 255], 0.25), 255));
+    fill_rounded(canvas, cx - hub, cy - hub, cx + hub, cy + hub, hub, WHITE);
+}
+
+/// A round gauge: a dial of segments around the value, with the name in the opening at the bottom.
 fn ring_widget(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget) {
     let (bold, semi) = fonts();
     let side = widget.w.min(widget.h);
@@ -216,58 +689,39 @@ fn ring_widget(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget) {
             cx + side / 2.0,
             cy + side / 2.0,
             side / 2.0,
-            SHADE,
+            with_alpha(PLATE, 232),
         );
     }
-    let thickness = side * 0.075;
-    let radius = side / 2.0 - thickness / 2.0 - side * 0.05;
-    arc(
-        canvas,
-        cx,
-        cy,
-        radius,
-        thickness,
-        GAUGE_START,
-        GAUGE_SWEEP,
-        TRACK,
-    );
-    if let Some(fraction) = readings.fraction(widget.metric) {
-        let sweep = GAUGE_SWEEP * fraction as f32;
-        if sweep > 0.5 {
-            arc(
-                canvas,
-                cx,
-                cy,
-                radius,
-                thickness,
-                GAUGE_START,
-                sweep,
-                color_of(widget),
-            );
-        }
+    let radius = side / 2.0 - side * 0.04;
+    let thickness = radius * 0.22;
+    let fam = family(widget.metric);
+    let (at, peak) = level(readings, widget.metric).unwrap_or((0.0, 0.0));
+    dial(canvas, cx, cy, radius, thickness, 24, 2.5, fam, widget.color, at, peak);
+    // A solid ring inside the dial, where a real gauge has its scale.
+    let scale = radius - thickness - (radius * 0.07).max(4.0);
+    seg_arc(canvas, cx, cy, scale, 3.0, DIAL_START, DIAL_SWEEP, 1, 0.0, |_| with_alpha(widget.color, 130));
+    let value_size = side * 0.26;
+    let mut color = value_color(widget.metric);
+    if fam == Family::Load && at >= 0.85 {
+        color = with_alpha(hot_for(widget.color), 255);
+    } else if fam == Family::Heat && readings.has(widget.metric) {
+        color = with_alpha(mix(heat(at), [255, 255, 255], 0.35), 255);
     }
-    let inner = radius * 1.5;
-    let value_size = side * 0.21;
-    text(
-        canvas,
-        bold,
-        value_size,
-        cx,
-        cy + value_size * 0.3,
-        &readings.text(widget.metric),
-        value_color(widget.metric),
-        Align::Center,
-        inner,
-    );
+    let (value, unit) = readings.parts(widget.metric);
+    let room = scale * 1.5;
+    let natural = measure(bold, value_size, &value) + if unit.is_empty() { 0.0 } else { value_size * 0.08 + measure(semi, value_size * 0.42, &unit) };
+    let size = if natural > room { value_size * room / natural } else { value_size };
+    let width = natural * size / value_size;
+    value_line(canvas, readings, widget, cx - width / 2.0, cy + size * 0.3, size, room, false, color);
     if widget.caption {
         text(
             canvas,
             semi,
-            side * 0.1,
+            side * 0.11,
             cx,
-            cy + radius * 0.82,
+            cy + radius * 0.74,
             widget.metric.label(),
-            MUTED,
+            tint_of(widget),
             Align::Center,
             radius,
         );
@@ -367,8 +821,6 @@ pub const EFFECT_FRAME: Duration = Duration::from_millis(100);
 const FIELD: usize = 240;
 /// Randomized effects (twinkle, fire) get one number per block of this many cells, so their spots are large enough to see.
 const FIELD_BLOCK: usize = 12;
-/// Laid under each widget on an effect background, so white text stays readable on bright colors.
-const EFFECT_SHADE: Rgba<u8> = Rgba([8, 6, 12, 120]);
 
 /// The lighting effect as a full-screen background.
 fn effect_backdrop(effect: &EffectFrame) -> RgbaImage {
@@ -408,11 +860,13 @@ fn effect_backdrop(effect: &EffectFrame) -> RgbaImage {
 /// A full-screen dashboard on the lighting effect.
 fn dashboard_on_effect(readings: &Readings, layout: &Layout, effect: &EffectFrame) -> RgbImage {
     let mut canvas = effect_backdrop(effect);
-    for widget in layout.widgets.iter().filter(|widget| !widget.backdrop) {
-        let radius = (widget.h * 0.12).min(18.0);
-        fill_rounded(&mut canvas, widget.x, widget.y, widget.x + widget.w, widget.y + widget.h, radius, EFFECT_SHADE);
+    // Every gauge, bar and tile gets its dark backdrop, so it stays readable on bright colors.
+    // Plain text keeps the effect behind it: its shadow is enough, and a slab would hide most of the screen.
+    let mut widgets = layout.widgets.clone();
+    for widget in &mut widgets {
+        widget.backdrop |= widget.style != Style::Text;
     }
-    draw_widgets(&mut canvas, readings, &layout.widgets);
+    draw_widgets(&mut canvas, readings, &widgets);
     flatten(&canvas)
 }
 
@@ -447,53 +901,6 @@ fn bar(
     }
 }
 
-/// An anti-aliased arc with round ends. Angles are in degrees, clockwise from
-/// three o'clock, as the screen's y axis points down.
-#[allow(clippy::too_many_arguments)]
-fn arc(
-    canvas: &mut RgbaImage,
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    thickness: f32,
-    start: f32,
-    sweep: f32,
-    color: Rgba<u8>,
-) {
-    let half = thickness / 2.0;
-    let point = |degrees: f32| {
-        let angle = degrees.to_radians();
-        (cx + radius * angle.cos(), cy + radius * angle.sin())
-    };
-    let ends = [point(start), point(start + sweep)];
-    let reach = radius + half + 1.0;
-    let (left, right) = (
-        (cx - reach).floor().max(0.0),
-        (cx + reach).ceil().min(SIZE as f32),
-    );
-    let (top, bottom) = (
-        (cy - reach).floor().max(0.0),
-        (cy + reach).ceil().min(SIZE as f32),
-    );
-    for py in top as i32..bottom as i32 {
-        for px in left as i32..right as i32 {
-            let (x, y) = (px as f32 + 0.5, py as f32 + 0.5);
-            let (dx, dy) = (x - cx, y - cy);
-            let along = (dy.atan2(dx).to_degrees() - start).rem_euclid(360.0);
-            let distance = if along <= sweep {
-                ((dx * dx + dy * dy).sqrt() - radius).abs()
-            } else {
-                ends.iter()
-                    .map(|(ex, ey)| ((x - ex).powi(2) + (y - ey).powi(2)).sqrt())
-                    .fold(f32::MAX, f32::min)
-            };
-            let coverage = (half - distance + 0.5).clamp(0.0, 1.0);
-            if coverage > 0.0 {
-                blend(canvas, px, py, color, coverage);
-            }
-        }
-    }
-}
 
 #[derive(Clone, Copy)]
 enum Align {
@@ -544,6 +951,12 @@ fn text(
             continue;
         };
         let bounds = outline.px_bounds();
+        let drop = (size * 0.04).round().clamp(1.0, 4.0) as i32;
+        outline.draw(|gx, gy, coverage| {
+            let px = bounds.min.x as i32 + gx as i32;
+            let py = bounds.min.y as i32 + gy as i32;
+            blend(canvas, px, py + drop, TEXT_SHADOW, coverage);
+        });
         outline.draw(|gx, gy, coverage| {
             let px = bounds.min.x as i32 + gx as i32;
             let py = bounds.min.y as i32 + gy as i32;
@@ -854,6 +1267,28 @@ mod tests {
         let mut readings = Readings::default();
         readings.set(Metric::CpuUsage, 37.0, Some(100.0));
         readings.set(Metric::GpuTemp, 58.0, None);
+        readings.set(Metric::GpuUsage, 64.0, Some(100.0));
+        readings.set(Metric::MemoryUsage, 18.0, Some(100.0));
+        readings.set(Metric::CpuClock, 4300.0, None);
+        readings.set(Metric::NetDown, 2_400_000.0, None);
+        readings.set(Metric::PumpSpeed, 2400.0, None);
+        readings.set(Metric::CpuPower, 95.0, None);
+        readings.set(Metric::CpuTemp, 84.0, None);
+        readings.set(Metric::GpuFan, 45.0, Some(100.0));
+        // A minute of made-up history, so graphs have something to draw.
+        for (index, metric) in [Metric::CpuUsage, Metric::GpuTemp, Metric::GpuUsage, Metric::MemoryUsage, Metric::CpuClock, Metric::NetDown]
+            .into_iter()
+            .enumerate()
+        {
+            let now = readings.get(metric).expect("set above").now;
+            let past = (0..60)
+                .map(|second| {
+                    let wave = ((second as f64 * 0.21 + index as f64).sin() + (second as f64 * 0.67).cos() * 0.5) * 0.25;
+                    (now * (1.0 + wave * (60 - second) as f64 / 60.0)).max(0.0)
+                })
+                .collect();
+            readings.set_history(metric, past);
+        }
         readings.set(
             Metric::MemoryUsed,
             21.0 * 1_073_741_824.0,
@@ -877,7 +1312,10 @@ mod tests {
         }
 
         // Every effect fills the whole screen without a seam, and one frame fits well inside `EFFECT_FRAME`.
-        let layout = layout::arrange_dashboard(&stats::ALL[..8], Background::default());
+        let mut layout = layout::arrange_dashboard(&stats::ALL[..8], Background::default());
+        if let Some(saved) = std::env::var_os("COOLWAVE_EFFECT_LAYOUT") {
+            layout = serde_json::from_slice(&std::fs::read(saved).expect("reads")).expect("a layout");
+        }
         let folder = std::env::var_os("COOLWAVE_EFFECT_SHOTS").map(std::path::PathBuf::from);
         for effect in Effect::ALL {
             if effect == Effect::Off {
@@ -928,19 +1366,19 @@ mod tests {
         widget.caption = false;
         let image = overlay(&sample(), &[widget.clone()]);
         let color = Rgba([widget.color[0], widget.color[1], widget.color[2], 255]);
-        let thickness = widget.w * 0.075;
-        let radius = widget.w / 2.0 - thickness / 2.0 - widget.w * 0.05;
-        // 37% of 270° from the lower left reaches past the left edge, not the top.
-        let at = |degrees: f32| {
-            let angle = degrees.to_radians();
+        let outer = widget.w / 2.0 - widget.w * 0.04;
+        let radius = outer - outer * 0.11;
+        // 37% lights 9 of the 24 segments. Sample the middle of one that is lit and one that is not.
+        let at = |segment: f32| {
+            let angle = (DIAL_START + DIAL_SWEEP * (segment + 0.5) / 24.0).to_radians();
             let (cx, cy) = widget.center();
             *image.get_pixel(
                 (cx + radius * angle.cos()) as u32,
                 (cy + radius * angle.sin()) as u32,
             )
         };
-        assert_eq!(at(180.0), color, "filled part");
-        assert_ne!(at(300.0), color, "empty part");
+        assert_eq!(at(2.0), color, "filled part");
+        assert_ne!(at(15.0), color, "empty part");
     }
 
     #[test]

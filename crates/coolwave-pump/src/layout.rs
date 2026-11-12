@@ -222,16 +222,27 @@ pub fn arrange_dashboard(items: &[Metric], background: Background) -> Layout {
         .take(8)
         .collect();
     let mut widgets = Vec::new();
-    let (time_h, date_h) = if tiles.is_empty() {
+    // With both processors' load shown and room to spare, they become two large dials.
+    let dials: Vec<Metric> = [Metric::CpuUsage, Metric::GpuUsage]
+        .into_iter()
+        .filter(|metric| tiles.len() <= 6 && tiles.contains(metric))
+        .collect();
+    let dials = if dials.len() == 2 { dials } else { Vec::new() };
+    let tiles: Vec<Metric> = tiles.into_iter().filter(|metric| !dials.contains(metric)).collect();
+    let (time_h, date_h) = if tiles.is_empty() && dials.is_empty() {
         (220.0, 70.0)
-    } else {
+    } else if dials.is_empty() {
         (130.0, 50.0)
+    } else {
+        (104.0, 40.0)
     };
     let clock_h = if show_time { time_h } else { 0.0 } + if show_date { date_h } else { 0.0 };
-    let mut y = if tiles.is_empty() {
+    let mut y = if tiles.is_empty() && dials.is_empty() {
         (SCREEN - clock_h) / 2.0
-    } else {
+    } else if dials.is_empty() {
         40.0
+    } else {
+        28.0
     };
     if show_time {
         widgets.push(clock_widget(Metric::Time, y, time_h));
@@ -242,6 +253,21 @@ pub fn arrange_dashboard(items: &[Metric], background: Background) -> Layout {
         y += date_h;
     }
     y = if clock_h > 0.0 { y + 16.0 } else { 40.0 };
+    if !dials.is_empty() {
+        let (left, right, bottom, gap) = (40.0, SCREEN - 40.0, SCREEN - 40.0, 16.0);
+        // The tiles under the dials keep at least 100 pixels a row.
+        let rows = tiles.len().div_ceil(2) as f32;
+        let side = (bottom - y - rows * (100.0 + gap)).min(300.0);
+        let column = (right - left - gap) / 2.0;
+        for (index, metric) in dials.iter().enumerate() {
+            let center = left + column / 2.0 + index as f32 * (column + gap);
+            let mut widget = Widget::new(*metric, Style::Ring, center, y + side / 2.0);
+            (widget.x, widget.y, widget.w, widget.h) = (center - side / 2.0, y, side, side);
+            widget.color = group_color(*metric);
+            widgets.push(widget);
+        }
+        y += side + gap;
+    }
     if !tiles.is_empty() {
         let (left, right, bottom, gap) = (40.0, SCREEN - 40.0, SCREEN - 40.0, 16.0);
         let rows = tiles.len().div_ceil(2);
@@ -261,6 +287,7 @@ pub fn arrange_dashboard(items: &[Metric], background: Background) -> Layout {
             widget.y = top + row as f32 * (tile_h + gap);
             widget.w = w;
             widget.h = tile_h.max(MIN_SIZE);
+            widget.color = group_color(*metric);
             widget.keep_on_screen();
             widgets.push(widget);
         }
@@ -268,6 +295,19 @@ pub fn arrange_dashboard(items: &[Metric], background: Background) -> Layout {
     Layout {
         widgets,
         background,
+    }
+}
+
+/// A color per part of the computer, so its readings can be found at a glance.
+fn group_color(metric: Metric) -> [u8; 3] {
+    use Metric::*;
+    match metric {
+        CpuUsage | CpuClock | CpuTemp | CpuPower => PALETTE[0],
+        GpuUsage | GpuClock | GpuTemp | GpuPower | GpuFan | GpuMemory => PALETTE[5],
+        MemoryUsage | MemoryUsed | DiskUsage => PALETTE[2],
+        DiskRead | DiskWrite | NetDown | NetUp => PALETTE[3],
+        PumpSpeed | CoolantTemp | FanSpeed => PALETTE[4],
+        Time | Date => PALETTE[0],
     }
 }
 
@@ -402,6 +442,20 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn both_loads_become_dials_over_the_tiles() {
+        let items = [Metric::Time, Metric::Date, Metric::CpuUsage, Metric::CpuClock, Metric::GpuUsage, Metric::GpuTemp, Metric::MemoryUsage, Metric::NetDown];
+        let layout = arrange_dashboard(&items, Background::default());
+        let dials: Vec<&Widget> = layout.widgets.iter().filter(|widget| widget.style == Style::Ring).collect();
+        assert_eq!(dials.len(), 2);
+        assert!(dials.iter().all(|dial| dial.w == dial.h && dial.w >= 200.0));
+        assert_ne!(dials[0].color, dials[1].color, "each processor has its own color");
+        assert_eq!(layout.widgets.len(), items.len());
+        if let Some(path) = std::env::var_os("COOLWAVE_PRINT_LAYOUT") {
+            std::fs::write(path, serde_json::to_vec(&layout.widgets).unwrap()).unwrap();
         }
     }
 
