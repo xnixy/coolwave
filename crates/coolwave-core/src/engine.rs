@@ -539,6 +539,10 @@ impl Device for EuruxDev {
 const AURA_SETTLE_SECS: [u64; 3] = [5, 20, 60];
 /// The loop standing still this long, or the clock jumping, means the computer slept.
 const AURA_WAKE_GAP: Duration = Duration::from_secs(5);
+/// The controller also drops direct mode with no sleep or restart involved (seen on
+/// Windows, where Dynamic Lighting shares the device), and nothing reports that it
+/// did. So direct mode is sent again this often for as long as Coolwave runs.
+const AURA_KEEPALIVE: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 struct AuraDev {
@@ -610,6 +614,9 @@ impl Device for AuraDev {
         let now = Instant::now();
         if self.reassert.iter().any(|t| *t <= now) {
             self.reassert.retain(|t| *t > now);
+            if self.reassert.is_empty() {
+                self.reassert.push(now + AURA_KEEPALIVE);
+            }
             dev.enter_direct()?;
             // Resend every zone too: a reset controller has lost the colors it was showing.
             self.last.clear();
