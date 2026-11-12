@@ -164,6 +164,7 @@ struct Shared {
 
 pub struct Engine {
     shared: Arc<Mutex<Shared>>,
+    clock: Instant,
     status: Arc<Mutex<Status>>,
     stop: Arc<AtomicBool>,
     handles: Vec<JoinHandle<()>>,
@@ -175,7 +176,9 @@ impl Engine {
         let shared = Arc::new(Mutex::new(Shared { config, generation: 1, cpu_temp: 40.0, leds: [eurux_leds, 0, 0] }));
         let status = Arc::new(Mutex::new(Status::default()));
         let stop = Arc::new(AtomicBool::new(false));
-        let ctx = Ctx { shared: shared.clone(), status: status.clone(), stop: stop.clone(), clock: Instant::now() };
+        let clock = Instant::now();
+        let ctx = Ctx { shared: shared.clone(), status: status.clone(), stop: stop.clone(), clock };
+        *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(EffectView { shared: shared.clone(), clock });
 
         let spawn = |name: &str, f: Box<dyn FnOnce() + Send>| {
             thread::Builder::new().name(name.into()).spawn(f).expect("spawn lighting thread")
@@ -194,7 +197,12 @@ impl Engine {
             handles.push(spawn("cw-gpu", Box::new(move || run_device(ctx, GpuDev::default()))));
         }
         handles.push(spawn("cw-sensors", Box::new(move || run_sensors(ctx))));
-        Self { shared, status, stop, handles }
+        Self { shared, clock, status, stop, handles }
+    }
+
+    /// The effect as it plays, for drawing it somewhere other than on a lighting device.
+    pub fn effect_view(&self) -> EffectView {
+        EffectView { shared: self.shared.clone(), clock: self.clock }
     }
 
     pub fn update(&self, f: impl FnOnce(&mut Config)) {
@@ -214,10 +222,69 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
+        let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+        if live.as_ref().is_some_and(|view| Arc::ptr_eq(&view.shared, &self.shared)) {
+            *live = None;
+        }
+        drop(live);
         self.stop.store(true, Ordering::Relaxed);
         for h in self.handles.drain(..) {
             let _ = h.join();
         }
+    }
+}
+
+/// The running engine's effect, for code that has no handle to the engine (the pump screen).
+static LIVE: Mutex<Option<EffectView>> = Mutex::new(None);
+
+/// The effect of the engine that is running now, if any.
+pub fn live_effect() -> Option<EffectView> {
+    LIVE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Reads the effect on the same clock as the lighting devices, so anything drawn from it stays in sync.
+#[derive(Clone)]
+pub struct EffectView {
+    shared: Arc<Mutex<Shared>>,
+    clock: Instant,
+}
+
+impl EffectView {
+    /// The effect at this moment, or `None` while the lights are off.
+    pub fn frame(&self) -> Option<EffectFrame> {
+        let (mut params, cpu_temp) = {
+            let s = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            (s.config.params, s.cpu_temp)
+        };
+        if params.effect == Effect::Off {
+            return None;
+        }
+        params.cpu_temp = cpu_temp;
+        Some(EffectFrame { params, t: self.clock.elapsed().as_secs_f32() })
+    }
+}
+
+/// One moment of the effect: every color read from it belongs to the same frame.
+#[derive(Clone, Copy, Debug)]
+pub struct EffectFrame {
+    params: Params,
+    t: f32,
+}
+
+impl EffectFrame {
+    /// Color at `pos` (0..1 along whatever is being drawn). `id` picks a stream for randomized effects.
+    pub fn color(&self, pos: f32, id: u32) -> Rgb {
+        effects::color_at(&self.params, self.t, pos, id)
+    }
+
+    /// Color at a spot of a flat screen; see `effects::screen`.
+    pub fn screen(&self, u: f32, v: f32, id: u32) -> Rgb {
+        effects::screen(&self.params, self.t, u, v, id)
+    }
+
+    /// The colors change over time, so they are worth redrawing often.
+    pub fn animated(&self) -> bool {
+        !self.params.effect.is_static()
     }
 }
 
@@ -739,7 +806,22 @@ impl Engine {
 
 #[cfg(test)]
 mod tests {
-    use super::curve_duty;
+    use super::{curve_duty, Config, Effect, Engine};
+
+    #[test]
+    fn effect_view_follows_the_config() {
+        let mut config = Config { eurux_enabled: false, aura_enabled: false, gpu_enabled: false, ..Config::default() };
+        config.params.effect = Effect::Static;
+        let engine = Engine::start(Vec::new(), config);
+        let view = engine.effect_view();
+        let frame = view.frame().expect("lights are on");
+        assert!(!frame.animated());
+        assert_eq!(frame.color(0.5, 0), engine.config().params.primary);
+        engine.update(|c| c.params.effect = Effect::Fire);
+        assert!(view.frame().expect("lights are on").animated());
+        engine.update(|c| c.params.effect = Effect::Off);
+        assert!(view.frame().is_none());
+    }
 
     #[test]
     fn interpolates_curve() {

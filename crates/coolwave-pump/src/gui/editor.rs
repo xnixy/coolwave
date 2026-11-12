@@ -781,6 +781,13 @@ impl Editor {
                     edit = Edit::done();
                 }
             }
+            ui.add_space(6.0);
+            let mut follow = layout.background.follow_effect;
+            let detail = "Plays the effect chosen under Lighting as the background. With the lights off, the background above is used.";
+            if widgets::switch_row(ui, &mut follow, "Follow the lighting effect", detail) {
+                layout.background.follow_effect = follow;
+                edit = Edit::done();
+            }
         });
         edit
     }

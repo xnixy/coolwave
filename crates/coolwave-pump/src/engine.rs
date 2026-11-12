@@ -985,6 +985,11 @@ fn worker_loop(
             play.retries = 0;
             let thousandths = speed.load(Ordering::Relaxed).clamp(250, 2000) as f32 / 1000.0;
             let gap = Duration::from_millis(play.frame_ms);
+            // A dashboard that plays a moving lighting effect changes faster than a held still.
+            let gap = match stats.dashboard_frame() {
+                Some(frame) if play.dashboard => frame,
+                _ => gap,
+            };
             let gap = if play.hold {
                 gap
             } else {

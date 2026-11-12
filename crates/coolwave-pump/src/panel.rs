@@ -6,8 +6,11 @@ use crate::layout::{Backdrop, Background, Layout, Style, Widget};
 use crate::stats::{self, Metric, Readings, Sampler};
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use image::{Rgb, RgbImage, Rgba, RgbaImage};
+use coolwave_core::engine::{live_effect, EffectFrame};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+use std::time::{Duration, Instant};
 
 pub const SIZE: u32 = 720;
 
@@ -327,17 +330,90 @@ fn bar_widget(canvas: &mut RgbaImage, readings: &Readings, widget: &Widget) {
 
 /// The dashboard's background, before any widgets.
 pub fn backdrop(background: Background) -> RgbaImage {
-    let [r, g, b] = background.color.map(f32::from);
-    RgbaImage::from_fn(SIZE, SIZE, |x, y| {
-        let (x, y) = (x as f32, y as f32);
-        let glow = match background.style {
-            Backdrop::Glow => falloff(x - 560.0, y - 600.0, 620.0, 1.6),
-            Backdrop::Spotlight => falloff(x - 360.0, y - 360.0, 520.0, 1.8) * 0.8,
-            Backdrop::Plain => 0.0,
-        };
+    backdrop_from(&glow_mask(background.style), background.color)
+}
+
+/// How strongly the glow shows at each pixel, row by row. The slow part of a
+/// backdrop, and the same for every color.
+fn glow_mask(style: Backdrop) -> Vec<f32> {
+    let mut mask = Vec::with_capacity((SIZE * SIZE) as usize);
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let (x, y) = (x as f32, y as f32);
+            mask.push(match style {
+                Backdrop::Glow => falloff(x - 560.0, y - 600.0, 620.0, 1.6),
+                Backdrop::Spotlight => falloff(x - 360.0, y - 360.0, 520.0, 1.8) * 0.8,
+                Backdrop::Plain => 0.0,
+            });
+        }
+    }
+    mask
+}
+
+fn backdrop_from(mask: &[f32], color: [u8; 3]) -> RgbaImage {
+    let [r, g, b] = color.map(f32::from);
+    let mut image = RgbaImage::new(SIZE, SIZE);
+    for (pixel, glow) in image.pixels_mut().zip(mask) {
         let channel = |base: f32, color: f32| (base + color * 0.3 * glow).round().min(255.0) as u8;
-        Rgba([channel(10.0, r), channel(8.0, g), channel(13.0, b), 255])
-    })
+        *pixel = Rgba([channel(10.0, r), channel(8.0, g), channel(13.0, b), 255]);
+    }
+    image
+}
+
+/// How often the dashboard is redrawn while it plays a moving lighting effect.
+pub const EFFECT_FRAME: Duration = Duration::from_millis(100);
+/// The effect is worked out on a grid this many cells wide and then smoothed
+/// up to the screen, which is far cheaper than one color per pixel.
+const FIELD: usize = 240;
+/// Randomized effects (twinkle, fire) get one number per block of this many cells, so their spots are large enough to see.
+const FIELD_BLOCK: usize = 12;
+/// Laid under each widget on an effect background, so white text stays readable on bright colors.
+const EFFECT_SHADE: Rgba<u8> = Rgba([8, 6, 12, 120]);
+
+/// The lighting effect as a full-screen background.
+fn effect_backdrop(effect: &EffectFrame) -> RgbaImage {
+    let mut cells = Vec::with_capacity(FIELD * FIELD);
+    for row in 0..FIELD {
+        for column in 0..FIELD {
+            let (u, v) = ((column as f32 + 0.5) / FIELD as f32, (row as f32 + 0.5) / FIELD as f32);
+            let block = (row / FIELD_BLOCK * FIELD + column / FIELD_BLOCK) as u32;
+            let color = effect.screen(u, v, block);
+            cells.push([f32::from(color.r), f32::from(color.g), f32::from(color.b)]);
+        }
+    }
+    // For each screen row or column: the two cells it lies between, and how far along.
+    let size = SIZE as usize;
+    let spots: Vec<(usize, usize, f32)> = (0..size)
+        .map(|pixel| {
+            let at = ((pixel as f32 + 0.5) * FIELD as f32 / size as f32 - 0.5).clamp(0.0, FIELD as f32 - 1.0);
+            let low = at.floor() as usize;
+            (low, (low + 1).min(FIELD - 1), at - low as f32)
+        })
+        .collect();
+    let mut image = RgbaImage::new(SIZE, SIZE);
+    for (row, line) in image.chunks_exact_mut(size * 4).enumerate() {
+        let (top, bottom, down) = spots[row];
+        for (pixel, (left, right, across)) in line.chunks_exact_mut(4).zip(&spots) {
+            for channel in 0..3 {
+                let upper = cells[top * FIELD + left][channel] * (1.0 - across) + cells[top * FIELD + right][channel] * across;
+                let lower = cells[bottom * FIELD + left][channel] * (1.0 - across) + cells[bottom * FIELD + right][channel] * across;
+                pixel[channel] = (upper * (1.0 - down) + lower * down).round().min(255.0) as u8;
+            }
+            pixel[3] = 255;
+        }
+    }
+    image
+}
+
+/// A full-screen dashboard on the lighting effect.
+fn dashboard_on_effect(readings: &Readings, layout: &Layout, effect: &EffectFrame) -> RgbImage {
+    let mut canvas = effect_backdrop(effect);
+    for widget in layout.widgets.iter().filter(|widget| !widget.backdrop) {
+        let radius = (widget.h * 0.12).min(18.0);
+        fill_rounded(&mut canvas, widget.x, widget.y, widget.x + widget.w, widget.y + widget.h, radius, EFFECT_SHADE);
+    }
+    draw_widgets(&mut canvas, readings, &layout.widgets);
+    flatten(&canvas)
 }
 
 fn falloff(dx: f32, dy: f32, reach: f32, power: f32) -> f32 {
@@ -594,6 +670,8 @@ pub struct Shared {
     config: Mutex<Config>,
     rendered: Mutex<Rendered>,
     readings: Mutex<Option<Readings>>,
+    /// The dashboard plays a moving lighting effect, so it is redrawn every `EFFECT_FRAME`.
+    animated: AtomicBool,
 }
 
 impl Shared {
@@ -626,6 +704,11 @@ impl Shared {
             .clone()
     }
 
+    /// How long the screen should hold a dashboard frame, when that is shorter than usual.
+    pub fn dashboard_frame(&self) -> Option<Duration> {
+        self.animated.load(Ordering::Relaxed).then_some(EFFECT_FRAME)
+    }
+
     pub fn readings(&self) -> Option<Readings> {
         self.readings
             .lock()
@@ -634,35 +717,69 @@ impl Shared {
     }
 }
 
-/// Sample and draw once a second while anything needs it.
+/// Sample and draw once a second while anything needs it. A dashboard that
+/// plays a moving lighting effect is drawn every `EFFECT_FRAME` instead, from
+/// the same readings until the next sample.
 pub fn spawn(shared: Arc<Shared>) {
     thread::spawn(move || {
         let mut sampler = Sampler::default();
         let mut version = 0u64;
+        let mut glow: Option<(Backdrop, Vec<f32>)> = None;
         let mut background: Option<(Background, RgbaImage)> = None;
+        let mut sampled: Option<(Instant, Readings)> = None;
         loop {
+            let began = Instant::now();
             let config = shared.config();
             let on_picture = config
                 .picture
                 .as_ref()
                 .is_some_and(|widgets| !widgets.is_empty());
             let drawing = on_picture || config.dashboard.is_some();
+            let effect = config
+                .dashboard
+                .as_ref()
+                .filter(|layout| layout.background.follow_effect)
+                .and_then(|_| live_effect())
+                .and_then(|view| view.frame());
+            let animated = effect.as_ref().is_some_and(EffectFrame::animated);
+            shared.animated.store(animated, Ordering::Relaxed);
             if drawing || config.window_open {
-                let mut readings = sampler.sample();
+                // A little early counts as due, so sleeping a whole interval never skips a sample.
+                let due = sampled.as_ref().is_none_or(|(at, _)| {
+                    at.elapsed() + Duration::from_millis(50) >= stats::INTERVAL
+                });
+                if due {
+                    sampled = Some((began, sampler.sample()));
+                }
+                let (_, readings) = sampled.as_mut().expect("sampled above");
                 readings.fahrenheit = config.fahrenheit;
-                if drawing {
+                let readings = readings.clone();
+                if drawing && (due || animated) {
                     version += 1;
-                    let overlay = config
-                        .picture
-                        .as_ref()
-                        .filter(|widgets| !widgets.is_empty())
-                        .map(|widgets| Arc::new(overlay(&readings, widgets)));
+                    let overlay = if due {
+                        config
+                            .picture
+                            .as_ref()
+                            .filter(|widgets| !widgets.is_empty())
+                            .map(|widgets| Arc::new(overlay(&readings, widgets)))
+                    } else {
+                        shared.rendered().overlay
+                    };
                     let dashboard = config.dashboard.as_ref().and_then(|layout| {
+                        if let Some(effect) = &effect {
+                            return encode(&dashboard_on_effect(&readings, layout, effect)).map(Arc::new);
+                        }
+                        let style = layout.background.style;
+                        if glow.as_ref().is_none_or(|(drawn, _)| *drawn != style) {
+                            glow = Some((style, glow_mask(style)));
+                        }
+                        let (_, mask) = glow.as_ref()?;
                         if background
                             .as_ref()
                             .is_none_or(|(drawn, _)| *drawn != layout.background)
                         {
-                            background = Some((layout.background, backdrop(layout.background)));
+                            background =
+                                Some((layout.background, backdrop_from(mask, layout.background.color)));
                         }
                         let (_, image) = background.as_ref()?;
                         encode(&dashboard(&readings, layout, image)).map(Arc::new)
@@ -681,7 +798,11 @@ pub fn spawn(shared: Arc<Shared>) {
                     .lock()
                     .unwrap_or_else(|poison| poison.into_inner()) = Some(readings);
             }
-            thread::sleep(stats::INTERVAL);
+            if animated {
+                thread::sleep(EFFECT_FRAME.saturating_sub(began.elapsed()).max(Duration::from_millis(10)));
+            } else {
+                thread::sleep(stats::INTERVAL);
+            }
         }
     });
 }
@@ -739,6 +860,39 @@ mod tests {
             Some(64.0 * 1_073_741_824.0),
         );
         readings
+    }
+
+    #[test]
+    fn a_dashboard_following_the_effect_plays_it_as_the_background() {
+        use coolwave_core::effects::Effect;
+        use coolwave_core::engine::{Config, Engine};
+        let mut config = Config { eurux_enabled: false, aura_enabled: false, gpu_enabled: false, ..Config::default() };
+        config.params.effect = Effect::Static;
+        let primary = config.params.primary;
+        let engine = Engine::start(Vec::new(), config);
+        let frame = engine.effect_view().frame().expect("lights are on");
+        let image = effect_backdrop(&frame);
+        for (x, y) in [(0, 0), (360, 360), (719, 719), (13, 700)] {
+            assert_eq!(image.get_pixel(x, y).0, [primary.r, primary.g, primary.b, 255]);
+        }
+
+        // Every effect fills the whole screen without a seam, and one frame fits well inside `EFFECT_FRAME`.
+        let layout = layout::arrange_dashboard(&stats::ALL[..8], Background::default());
+        let folder = std::env::var_os("COOLWAVE_EFFECT_SHOTS").map(std::path::PathBuf::from);
+        for effect in Effect::ALL {
+            if effect == Effect::Off {
+                continue;
+            }
+            engine.update(|config| config.params.effect = effect);
+            let frame = engine.effect_view().frame().expect("lights are on");
+            let began = Instant::now();
+            let picture = dashboard_on_effect(&sample(), &layout, &frame);
+            let jpeg = encode(&picture).expect("encodes");
+            println!("{}: {:?}, {} bytes", effect.name(), began.elapsed(), jpeg.len());
+            if let Some(folder) = &folder {
+                picture.save(folder.join(format!("{}.png", effect.name()))).expect("saves");
+            }
+        }
     }
 
     #[test]

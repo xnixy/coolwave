@@ -179,6 +179,9 @@ pub struct Background {
     pub style: Backdrop,
     #[serde(default = "accent")]
     pub color: [u8; 3],
+    /// Play the lighting effect as the background while the lights are on.
+    #[serde(default)]
+    pub follow_effect: bool,
 }
 
 impl Default for Background {
@@ -186,6 +189,7 @@ impl Default for Background {
         Self {
             style: Backdrop::Glow,
             color: accent(),
+            follow_effect: false,
         }
     }
 }

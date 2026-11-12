@@ -1133,6 +1133,19 @@ fn background_group(ui: &Rc<Ui>) -> adw::PreferencesGroup {
     });
     color_row.add_suffix(&colors);
     group.add(&color_row);
+    let follow = adw::SwitchRow::builder()
+        .title("Follow the lighting effect")
+        .subtitle("Plays the effect chosen under Lighting as the background.")
+        .build();
+    group.add(&follow);
+    {
+        let ui = Rc::clone(ui);
+        follow.connect_active_notify(move |row| {
+            let on = row.is_active();
+            ui.widgets
+                .change(&ui, |layout, _| layout.background.follow_effect = on);
+        });
+    }
     let shown = group.clone();
     ui.on_refresh(move |ui| {
         let canvas = ui.widgets.canvas.get();
@@ -1146,6 +1159,7 @@ fn background_group(ui: &Rc<Ui>) -> adw::PreferencesGroup {
         }
         color_row.set_visible(background.style != Backdrop::Plain);
         mark_swatch(&color_buttons, background.color);
+        follow.set_active(background.follow_effect);
     });
     group
 }

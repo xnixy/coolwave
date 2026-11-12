@@ -261,6 +261,58 @@ pub fn render(p: &Params, t: f32, px: &Pixel) -> Rgb {
     scale(c, p.brightness)
 }
 
+/// The effect on a flat screen instead of a row of LEDs. `u` and `v` run 0..1
+/// from the top left corner; `id` is a stable number for the spot, used by the
+/// randomized effects. Each effect is laid out the way it reads best on a
+/// surface: waves cross it, sweeps turn around the middle, pulses spread from it.
+pub fn screen(p: &Params, t: f32, u: f32, v: f32, id: u32) -> Rgb {
+    let (dx, dy) = (u - 0.5, v - 0.5);
+    // 0 in the middle, 1 in the corners.
+    let radius = ((dx * dx + dy * dy).sqrt() / std::f32::consts::FRAC_1_SQRT_2).min(1.0);
+    // 0..1 around the middle, starting at the top and going clockwise.
+    let turn = (dx.atan2(-dy) / std::f32::consts::TAU).rem_euclid(1.0);
+    let diagonal = (u + v) / 2.0;
+    let strip = |pos: f32, local: f32| Pixel { pos, id, kind: ZoneKind::Strip, group: 0, group_pos: local, local };
+    let px = match p.effect {
+        // Sweeps around the middle, like a radar.
+        Effect::Comet | Effect::Spin => strip(turn, turn),
+        // A bar going from side to side.
+        Effect::Scanner => strip(u, u),
+        // A bright core, then a shockwave to the corners.
+        Effect::Reactor if radius < 0.3 => Pixel { kind: ZoneKind::FanMiddle, ..strip(0.5, 0.5) },
+        // These three spread out from the middle of a strip, so the middle of the screen is its middle.
+        Effect::Reactor | Effect::Ripple => strip(radius, 0.5 + radius / 2.0),
+        Effect::DualTone => strip(radius, radius),
+        // Curtains hanging down, leaning a little.
+        Effect::Aurora => strip(u, u * 0.8 + v * 0.2),
+        // Flames rising from the bottom edge: two layers of noise drifting up, hottest low down.
+        Effect::Fire => {
+            let rise = t * p.speed.clamp(0.05, 10.0);
+            let flames = 0.65 * noise(u * 5.0, v * 4.0 + rise * 1.6) + 0.35 * noise(u * 11.0 + 7.0, v * 9.0 + rise * 2.7);
+            let heat = (v * 1.25 - 0.45 + flames * 0.75).clamp(0.0, 1.0);
+            let c = if heat < 0.5 {
+                lerp(Rgb::default(), Rgb::new(255, 30, 0), heat * 2.0)
+            } else {
+                lerp(Rgb::new(255, 30, 0), Rgb::new(255, 190, 40), heat * 2.0 - 1.0)
+            };
+            return scale(c, p.brightness);
+        }
+        _ => strip(diagonal, diagonal),
+    };
+    render(p, t, &px)
+}
+
+/// Smooth noise, 0..1: random values on a grid of whole numbers, blended in between.
+fn noise(x: f32, y: f32) -> f32 {
+    let (cell_x, cell_y) = (x.floor(), y.floor());
+    let ease = |f: f32| f * f * (3.0 - 2.0 * f);
+    let (fx, fy) = (ease(x - cell_x), ease(y - cell_y));
+    let corner = |dx: i32, dy: i32| hash((cell_x as i32 + dx) as u32, (cell_y as i32 + dy) as u32);
+    let top = corner(0, 0) + (corner(1, 0) - corner(0, 0)) * fx;
+    let bottom = corner(0, 1) + (corner(1, 1) - corner(0, 1)) * fx;
+    top + (bottom - top) * fy
+}
+
 pub fn hsv(h: f32, s: f32, v: f32) -> Rgb {
     let h = h.rem_euclid(1.0) * 6.0;
     let i = h.floor();
