@@ -532,10 +532,28 @@ impl Device for EuruxDev {
 
 // ---------------------------------------------------------------- Aura
 
+/// Direct mode is not saved on the controller, so it falls back to its stored
+/// effect whenever it resets (sleep, restart) while the USB handle stays valid
+/// and writes keep succeeding. Switching it back makes the lights blink, so it
+/// is only done when a reset is likely: this long after connecting or waking.
+const AURA_SETTLE_SECS: [u64; 3] = [5, 20, 60];
+/// The loop standing still this long, or the clock jumping, means the computer slept.
+const AURA_WAKE_GAP: Duration = Duration::from_secs(5);
+
 #[derive(Default)]
 struct AuraDev {
     dev: Option<Aura>,
     last: BTreeMap<u8, Vec<Rgb>>,
+    /// When the loop last ran, on both clocks (only one of them counts sleep, depending on the OS).
+    seen: Option<(Instant, std::time::SystemTime)>,
+    /// Times at which to switch back to direct mode.
+    reassert: Vec<Instant>,
+}
+
+impl AuraDev {
+    fn settle(now: Instant) -> impl Iterator<Item = Instant> {
+        AURA_SETTLE_SECS.into_iter().map(move |s| now + Duration::from_secs(s))
+    }
 }
 
 impl AuraDev {
@@ -565,6 +583,8 @@ impl Device for AuraDev {
         let msg = format!("Connected ({})", d.firmware);
         self.dev = Some(d);
         self.last.clear();
+        self.seen = None;
+        self.reassert = Self::settle(Instant::now()).collect();
         Ok(msg)
     }
     fn disconnect(&mut self) {
@@ -573,9 +593,27 @@ impl Device for AuraDev {
     fn leds(&self, cfg: &Config) -> usize {
         self.zones(cfg).iter().map(|z| z.1).sum()
     }
+    fn tick(&mut self, _cfg: &Config, _status: &Mutex<Status>) -> io::Result<()> {
+        let (now, wall) = (Instant::now(), std::time::SystemTime::now());
+        let woke = self.seen.is_some_and(|(then, then_wall)| {
+            now.duration_since(then) > AURA_WAKE_GAP || wall.duration_since(then_wall).map_or(true, |d| d > AURA_WAKE_GAP)
+        });
+        self.seen = Some((now, wall));
+        if woke {
+            self.reassert = std::iter::once(now).chain(Self::settle(now)).collect();
+        }
+        Ok(())
+    }
     fn render(&mut self, f: &Frame) -> io::Result<()> {
         let zones = self.zones(f.cfg);
         let dev = self.dev.as_mut().expect("connected");
+        let now = Instant::now();
+        if self.reassert.iter().any(|t| *t <= now) {
+            self.reassert.retain(|t| *t > now);
+            dev.enter_direct()?;
+            // Resend every zone too: a reset controller has lost the colors it was showing.
+            self.last.clear();
+        }
         let mut base = 0usize;
         for (ch, n) in zones {
             let colors: Vec<Rgb> = match f.identify(Identify::Aura(ch)) {
