@@ -10,7 +10,7 @@ use crate::eurux::{Eurux, FanColors, PortStatic};
 use crate::hwmon;
 use std::collections::BTreeMap;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -176,6 +176,8 @@ impl Engine {
         let shared = Arc::new(Mutex::new(Shared { config, generation: 1, cpu_temp: 40.0, leds: [eurux_leds, 0, 0] }));
         let status = Arc::new(Mutex::new(Status::default()));
         let stop = Arc::new(AtomicBool::new(false));
+        #[cfg(windows)]
+        crate::session::watch();
         let clock = Instant::now();
         let ctx = Ctx { shared: shared.clone(), status: status.clone(), stop: stop.clone(), clock };
         *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(EffectView { shared: shared.clone(), clock });
@@ -608,8 +610,20 @@ const AURA_SETTLE_SECS: [u64; 3] = [5, 20, 60];
 const AURA_WAKE_GAP: Duration = Duration::from_secs(5);
 /// The controller also drops direct mode with no sleep or restart involved (seen on
 /// Windows, where Dynamic Lighting shares the device), and nothing reports that it
-/// did. So direct mode is sent again this often for as long as Coolwave runs.
-const AURA_KEEPALIVE: Duration = Duration::from_secs(30);
+/// did. `renew_direct_mode` covers the moments Windows is known to touch it. For
+/// anything else, direct mode is sent again this often; rarely, because each time blinks.
+const AURA_KEEPALIVE: Duration = Duration::from_secs(600);
+/// After a renewal is asked for: once Windows has had a moment to act, and again in case it was slow.
+const AURA_RENEW_SECS: [u64; 3] = [1, 5, 20];
+
+/// Counts requests to send direct mode again.
+static RENEWALS: AtomicU64 = AtomicU64::new(0);
+
+/// Something just happened that may have made the Aura controller drop direct
+/// mode (the display turned off or on, the user came back). Safe from any thread.
+pub fn renew_direct_mode() {
+    RENEWALS.fetch_add(1, Ordering::Relaxed);
+}
 
 #[derive(Default)]
 struct AuraDev {
@@ -619,6 +633,8 @@ struct AuraDev {
     seen: Option<(Instant, std::time::SystemTime)>,
     /// Times at which to switch back to direct mode.
     reassert: Vec<Instant>,
+    /// The value of `RENEWALS` already acted on.
+    renewals: u64,
 }
 
 impl AuraDev {
@@ -656,6 +672,7 @@ impl Device for AuraDev {
         self.last.clear();
         self.seen = None;
         self.reassert = Self::settle(Instant::now()).collect();
+        self.renewals = RENEWALS.load(Ordering::Relaxed);
         Ok(msg)
     }
     fn disconnect(&mut self) {
@@ -672,6 +689,11 @@ impl Device for AuraDev {
         self.seen = Some((now, wall));
         if woke {
             self.reassert = std::iter::once(now).chain(Self::settle(now)).collect();
+        }
+        let renewals = RENEWALS.load(Ordering::Relaxed);
+        if renewals != self.renewals {
+            self.renewals = renewals;
+            self.reassert = AURA_RENEW_SECS.into_iter().map(|secs| now + Duration::from_secs(secs)).collect();
         }
         Ok(())
     }
