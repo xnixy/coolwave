@@ -612,6 +612,8 @@ const AURA_WAKE_GAP: Duration = Duration::from_secs(5);
 /// Windows, where Dynamic Lighting shares the device), and nothing reports that it
 /// did. `renew_direct_mode` covers the moments Windows is known to touch it. For
 /// anything else, direct mode is sent again this often; rarely, because each time blinks.
+/// Only on Windows: nothing else shares the controller on Linux, so there it would
+/// blink for no reason.
 const AURA_KEEPALIVE: Duration = Duration::from_secs(600);
 /// After a renewal is asked for: once Windows has had a moment to act, and again in case it was slow.
 const AURA_RENEW_SECS: [u64; 3] = [1, 5, 20];
@@ -703,7 +705,7 @@ impl Device for AuraDev {
         let now = Instant::now();
         if self.reassert.iter().any(|t| *t <= now) {
             self.reassert.retain(|t| *t > now);
-            if self.reassert.is_empty() {
+            if cfg!(windows) && self.reassert.is_empty() {
                 self.reassert.push(now + AURA_KEEPALIVE);
             }
             dev.enter_direct()?;
