@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/xnixy/coolwave/main/install.sh | sh
 The installer:
 
 1. installs build dependencies if needed (GTK 4.14+, libadwaita 1.5+, a C compiler; Fedora,
-   Debian/Ubuntu and Arch are supported) and Rust via rustup if `cargo` is missing,
+   Debian/Ubuntu, openSUSE and Arch are supported) and Rust via rustup if `cargo` is missing,
 2. downloads the source to `~/.local/src/coolwave` and builds it,
 3. installs the app to `~/.local/bin/coolwave` with its launcher entry and icon,
 4. installs the root part with `sudo`: udev rules so your user can talk to the devices, the

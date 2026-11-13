@@ -47,6 +47,8 @@ install_deps() {
     elif have apt-get; then
         $SUDO apt-get update
         $SUDO apt-get install -y build-essential pkg-config libgtk-4-dev libadwaita-1-dev git ffmpeg
+    elif have zypper; then
+        $SUDO zypper --non-interactive install gcc pkgconf-pkg-config gtk4-devel libadwaita-devel git ffmpeg
     elif have pacman; then
         $SUDO pacman -S --needed --noconfirm base-devel pkgconf gtk4 libadwaita git ffmpeg
     else
