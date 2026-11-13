@@ -14,5 +14,7 @@ modprobe nct6775 2>/dev/null || true
 modprobe i2c-dev 2>/dev/null || true
 udevadm control --reload
 udevadm trigger --attr-match=idVendor=0b05 || true
+# The hidraw nodes carry no idVendor of their own, so the line above skips them.
+udevadm trigger --subsystem-match=hidraw || true
 udevadm trigger --subsystem-match=i2c-dev || true
 echo "Coolwave system files installed."
