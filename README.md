@@ -43,10 +43,12 @@ curl -fsSL https://raw.githubusercontent.com/xnixy/coolwave/main/uninstall.sh | 
 
 ## Windows
 
-Coolwave also builds for Windows 10 and 11. The window there is drawn with egui in the same
-frosted look as [Blurman](https://github.com/xnixy/blurman). It needs no installer, no admin
-rights and no extra driver: the USB devices are reached through the Windows HID driver, and the
-graphics card through NVAPI, which comes with the NVIDIA driver.
+Coolwave also builds for Windows 10 and 11. The window there is native WinUI 3, through
+Microsoft's [windows-reactor](https://github.com/microsoft/windows-rs/tree/master/crates/libs/reactor)
+(a patched copy is in `vendor/`, see `vendor/README.md`), in the same look as
+[Blurman](https://github.com/xnixy/blurman). It needs no installer, no admin rights and no extra
+driver: the USB devices are reached through the Windows HID driver, and the graphics card through
+NVAPI, which comes with the NVIDIA driver.
 
 ```powershell
 git clone https://github.com/xnixy/coolwave.git
@@ -54,8 +56,16 @@ cd coolwave
 cargo build --release -p coolwave
 ```
 
-The app is `target\release\coolwave.exe`. Quit Armoury Crate and the ASUS pump screen program
-first, since they use the same USB connections. Settings are in `%APPDATA%\coolwave\`.
+The first build downloads the Windows App Runtime from NuGet and puts its files next to
+`target\release\coolwave.exe`. The app is that folder: the exe does not start without the DLLs,
+`.pri` files and folders beside it, so copy them along if you move it. Quit Armoury Crate and the
+ASUS pump screen program first, since they use the same USB connections. Settings are in
+`%APPDATA%\coolwave\`.
+
+To work on the window without touching any device or the settings file, run it with
+`COOLWAVE_UI_PREVIEW=1`. `COOLWAVE_UI_PAGE` (`lighting`, `cooling`, `pump`, `settings`) opens it
+on a page, and `COOLWAVE_UI_PUMP_TAB` (`show`, `widgets`, `screen`, `settings`) on a pump screen
+tab.
 
 What is different from Linux:
 

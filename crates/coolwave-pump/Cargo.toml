@@ -5,15 +5,10 @@ edition = "2021"
 description = "ROG Strix LC IV pump screen (USB 0b05:1de7) for Coolwave, merged from strix-lc-screen 0.4.0"
 license = "MIT"
 
-[features]
-# Build the egui page on Linux as well, to work on it without a Windows machine.
-egui = ["dep:coolwave-ui"]
-
 [dependencies]
 ab_glyph = "0.2"
 anyhow = "1"
 coolwave-core = { path = "../coolwave-core" }
-coolwave-ui = { path = "../coolwave-ui", optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -25,6 +20,8 @@ libc = "0.2"
 adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
 gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 
+# The pump screen page of the WinUI window.
 [target.'cfg(windows)'.dependencies]
 coolwave-ui = { path = "../coolwave-ui" }
 rfd = "0.15"
+windows-reactor = { git = "https://github.com/microsoft/windows-rs", rev = "63a5e3d9b9afbd57c382d0a4f5a367f134e9dc25" }

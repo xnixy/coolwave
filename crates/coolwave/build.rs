@@ -1,16 +1,13 @@
-//! Picks the window toolkit: egui on Windows (and anywhere with the `egui`
-//! feature), GTK otherwise. Code asks with `cfg(egui_ui)`. A Windows build
-//! also gets its icon and version details embedded in the exe.
+//! A Windows build gets its icon and version details embedded in the exe, and the Windows App
+//! Runtime its WinUI window needs staged beside it.
 
 fn main() {
-    println!("cargo::rustc-check-cfg=cfg(egui_ui)");
-    let for_windows = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
-    if for_windows || std::env::var_os("CARGO_FEATURE_EGUI").is_some() {
-        println!("cargo::rustc-cfg=egui_ui");
-    }
     #[cfg(windows)]
-    if for_windows {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         embed_exe_details();
+        // The runtime's files go beside coolwave.exe and a manifest naming its classes is
+        // embedded, so the window runs with nothing installed. Downloaded once, from NuGet.
+        windows_reactor_setup::as_self_contained();
     }
 }
 

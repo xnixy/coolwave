@@ -1,3 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/coolwave-core", "crates/coolwave-ui", "crates/coolwave", "crates/coolwave-fanctl", "crates/coolwave-pump"]
+
+# The Windows window: Microsoft's windows-reactor (WinUI 3) at a windows-rs commit, as the
+# crates.io release lacks the tray icon, reopenable windows and the window handle. Patched: see
+# vendor/README.md.
+[patch."https://github.com/microsoft/windows-rs"]
+windows-reactor = { path = "vendor/windows-reactor" }

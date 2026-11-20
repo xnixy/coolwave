@@ -1,8 +1,8 @@
 name: Windows build
 
-# Every push and pull request builds and tests the Windows app. The exe is kept
-# with the run's artifacts, and a push to main also publishes it as the
-# "latest" release.
+# Every push and pull request builds and tests the Windows app. Nothing is published: the window
+# needs the Windows App Runtime files the build stages beside coolwave.exe, so the exe alone would
+# not start.
 
 on:
   push:
@@ -11,8 +11,6 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -23,23 +21,3 @@ jobs:
 
       - name: Build release
         run: cargo build --release --locked -p coolwave
-
-      - name: Upload build
-        uses: actions/upload-artifact@v4
-        with:
-          name: coolwave-windows
-          path: target/release/coolwave.exe
-
-      # One rolling release: the old one is replaced so the download link stays the same.
-      - name: Publish release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release delete latest --cleanup-tag --yes || true
-          gh release create latest target/release/coolwave.exe \
-            --target "$GITHUB_SHA" \
-            --title "Coolwave for Windows" \
-            --notes "Latest build of main (${GITHUB_SHA::7})." \
-            --latest

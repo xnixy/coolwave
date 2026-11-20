@@ -1,6 +1,6 @@
 //! What the app does, without a window: the screen worker that talks to the
 //! pump, the jobs that wait on it, and the state both front ends show. The
-//! egui window on Windows and the GTK window on Linux draw from `Controller`.
+//! WinUI window on Windows and the GTK window on Linux draw from `Controller`.
 
 use crate::firmware;
 use crate::lock;
@@ -140,7 +140,7 @@ impl Controller {
     }
 
     /// Closing the window keeps the app running in the tray.
-    #[cfg(not(egui_ui))]
+    #[cfg(not(windows))]
     pub fn closes_to_tray(&self) -> bool {
         self.settings.close_to_tray && self.tray.available
     }
@@ -174,7 +174,7 @@ impl Controller {
     }
 
     /// Something is still running that the window should check on soon.
-    #[cfg(egui_ui)]
+    #[cfg(windows)]
     pub fn waiting(&self) -> bool {
         self.pending.is_some() || self.preview_rx.is_some()
     }
