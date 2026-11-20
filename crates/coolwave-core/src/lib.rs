@@ -9,8 +9,6 @@ pub mod eurux;
 pub mod hid;
 pub mod hwinfo;
 pub mod hwmon;
-#[cfg(windows)]
-mod session;
 pub mod settings;
 
 pub use color::Rgb;

@@ -10,7 +10,7 @@ use crate::eurux::{Eurux, FanColors, PortStatic};
 use crate::hwmon;
 use std::collections::BTreeMap;
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -176,8 +176,6 @@ impl Engine {
         let shared = Arc::new(Mutex::new(Shared { config, generation: 1, cpu_temp: 40.0, leds: [eurux_leds, 0, 0] }));
         let status = Arc::new(Mutex::new(Status::default()));
         let stop = Arc::new(AtomicBool::new(false));
-        #[cfg(windows)]
-        crate::session::watch();
         let clock = Instant::now();
         let ctx = Ctx { shared: shared.clone(), status: status.clone(), stop: stop.clone(), clock };
         *LIVE.lock().unwrap_or_else(|e| e.into_inner()) = Some(EffectView { shared: shared.clone(), clock });
@@ -604,28 +602,9 @@ impl Device for EuruxDev {
 /// Direct mode is not saved on the controller, so it falls back to its stored
 /// effect whenever it resets (sleep, restart) while the USB handle stays valid
 /// and writes keep succeeding. Switching it back makes the lights blink, so it
-/// is only done when a reset is likely: this long after connecting or waking.
-const AURA_SETTLE_SECS: [u64; 3] = [5, 20, 60];
+/// is done once on connecting and once after the computer wakes, never on a timer.
 /// The loop standing still this long, or the clock jumping, means the computer slept.
 const AURA_WAKE_GAP: Duration = Duration::from_secs(5);
-/// The controller also drops direct mode with no sleep or restart involved (seen on
-/// Windows, where Dynamic Lighting shares the device), and nothing reports that it
-/// did. `renew_direct_mode` covers the moments Windows is known to touch it. For
-/// anything else, direct mode is sent again this often; rarely, because each time blinks.
-/// Only on Windows: nothing else shares the controller on Linux, so there it would
-/// blink for no reason.
-const AURA_KEEPALIVE: Duration = Duration::from_secs(600);
-/// After a renewal is asked for: once Windows has had a moment to act, and again in case it was slow.
-const AURA_RENEW_SECS: [u64; 3] = [1, 5, 20];
-
-/// Counts requests to send direct mode again.
-static RENEWALS: AtomicU64 = AtomicU64::new(0);
-
-/// Something just happened that may have made the Aura controller drop direct
-/// mode (the display turned off or on, the user came back). Safe from any thread.
-pub fn renew_direct_mode() {
-    RENEWALS.fetch_add(1, Ordering::Relaxed);
-}
 
 #[derive(Default)]
 struct AuraDev {
@@ -633,16 +612,8 @@ struct AuraDev {
     last: BTreeMap<u8, Vec<Rgb>>,
     /// When the loop last ran, on both clocks (only one of them counts sleep, depending on the OS).
     seen: Option<(Instant, std::time::SystemTime)>,
-    /// Times at which to switch back to direct mode.
-    reassert: Vec<Instant>,
-    /// The value of `RENEWALS` already acted on.
-    renewals: u64,
-}
-
-impl AuraDev {
-    fn settle(now: Instant) -> impl Iterator<Item = Instant> {
-        AURA_SETTLE_SECS.into_iter().map(move |s| now + Duration::from_secs(s))
-    }
+    /// The computer just woke: switch back to direct mode on the next frame.
+    woke: bool,
 }
 
 impl AuraDev {
@@ -673,8 +644,7 @@ impl Device for AuraDev {
         self.dev = Some(d);
         self.last.clear();
         self.seen = None;
-        self.reassert = Self::settle(Instant::now()).collect();
-        self.renewals = RENEWALS.load(Ordering::Relaxed);
+        self.woke = false;
         Ok(msg)
     }
     fn disconnect(&mut self) {
@@ -685,29 +655,16 @@ impl Device for AuraDev {
     }
     fn tick(&mut self, _cfg: &Config, _status: &Mutex<Status>) -> io::Result<()> {
         let (now, wall) = (Instant::now(), std::time::SystemTime::now());
-        let woke = self.seen.is_some_and(|(then, then_wall)| {
+        self.woke |= self.seen.is_some_and(|(then, then_wall)| {
             now.duration_since(then) > AURA_WAKE_GAP || wall.duration_since(then_wall).map_or(true, |d| d > AURA_WAKE_GAP)
         });
         self.seen = Some((now, wall));
-        if woke {
-            self.reassert = std::iter::once(now).chain(Self::settle(now)).collect();
-        }
-        let renewals = RENEWALS.load(Ordering::Relaxed);
-        if renewals != self.renewals {
-            self.renewals = renewals;
-            self.reassert = AURA_RENEW_SECS.into_iter().map(|secs| now + Duration::from_secs(secs)).collect();
-        }
         Ok(())
     }
     fn render(&mut self, f: &Frame) -> io::Result<()> {
         let zones = self.zones(f.cfg);
         let dev = self.dev.as_mut().expect("connected");
-        let now = Instant::now();
-        if self.reassert.iter().any(|t| *t <= now) {
-            self.reassert.retain(|t| *t > now);
-            if cfg!(windows) && self.reassert.is_empty() {
-                self.reassert.push(now + AURA_KEEPALIVE);
-            }
+        if std::mem::take(&mut self.woke) {
             dev.enter_direct()?;
             // Resend every zone too: a reset controller has lost the colors it was showing.
             self.last.clear();
